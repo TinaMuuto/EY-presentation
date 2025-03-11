@@ -60,7 +60,10 @@ variant_file = st.file_uploader("Upload 'EY - variant master data'", type=["xlsx
 lifestyle_file = st.file_uploader("Upload 'EY - lifestyle'", type=["xlsx"])
 line_drawing_file = st.file_uploader("Upload 'EY - line drawing'", type=["xlsx"])
 instruktioner_file = st.file_uploader("Upload 'Instruktioner'", type=["xlsx"])
+template_default = "Appendix 1 - Ancillary Furniture and Accessories Catalogue _ CLE.pptx"
 template_file = st.file_uploader("Upload PowerPoint skabelon", type=["pptx"])
+if template_file is None:
+    template_file = template_default  # Brug standardfilen
 
 if st.button("Generér PowerPoint") and all([user_file, variant_file, lifestyle_file, line_drawing_file, instruktioner_file, template_file]):
     user_data = pd.read_excel(user_file)
