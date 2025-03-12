@@ -119,7 +119,7 @@ def lookup_line_drawings(item_no, variant_df, line_df):
 
 def duplicate_slide_in_same_presentation(prs, slide_index=0):
     source_slide = prs.slides[slide_index]
-    slide_layout = source_slide.slide_layout
+    slide_layout = source_slide.slide_layout  # Brug source slide's eget layout
     new_slide = prs.slides.add_slide(slide_layout)
     for shape in source_slide.shapes:
         el = shape.element
@@ -148,6 +148,12 @@ def replace_text_placeholders(slide, replacements):
 def insert_image_in_placeholder(slide, placeholder, image_url):
     if not image_url:
         return
+    # Bestem resample-filter med fallback
+    try:
+        resample_filter = Image.Resampling.LANCZOS
+    except AttributeError:
+        resample_filter = Image.ANTIALIAS
+
     for shape in slide.shapes:
         if shape.has_text_frame and shape.text.strip() == f"{{{{{placeholder}}}}}":
             left, top = shape.left, shape.top
@@ -161,12 +167,12 @@ def insert_image_in_placeholder(slide, placeholder, image_url):
                         scale = min(max_w / w, max_h / h)
                         new_w = int(w * scale)
                         new_h = int(h * scale)
-                        # Resize billedet til den nye størrelse
-                        resized_im = im.resize((new_w, new_h), Image.ANTIALIAS)
+                        # Resize billedet med det valgte resample-filter
+                        resized_im = im.resize((new_w, new_h), resample=resample_filter)
                         # Konverter til RGB hvis nødvendigt
                         if resized_im.mode not in ("RGB", "L"):
                             resized_im = resized_im.convert("RGB")
-                        # Gem billedet som JPEG med lavere kvalitet for at komprimere
+                        # Gem som JPEG med reduceret kvalitet for at komprimere
                         output_io = io.BytesIO()
                         resized_im.save(output_io, format="JPEG", quality=70)
                         output_io.seek(0)
@@ -184,14 +190,12 @@ def replace_hyperlink_placeholder(slide, placeholder, display_text, url):
         return
     for shape in slide.shapes:
         if shape.has_text_frame and f"{{{{{placeholder}}}}}" in shape.text:
-            # Vi sletter blot placeholderen i de enkelte runs
             for paragraph in shape.text_frame.paragraphs:
                 for run in paragraph.runs:
                     placeholder_tag = f"{{{{{placeholder}}}}}"
                     if placeholder_tag in run.text:
                         run.text = run.text.replace(placeholder_tag, "")
                         run.hyperlink.address = url
-                        # Indsæt display_text hvis der ikke er tekst
                         if not run.text:
                             run.text = display_text
 
@@ -265,7 +269,6 @@ if uploaded_file:
         st.stop()
     
     user_df = user_df.rename(columns={item_no_col: "Item no", product_name_col: "Product name"})
-    # Konverter 'Item no' til string for at undgå typeproblemer
     user_df["Item no"] = user_df["Item no"].astype(str)
     
     st.write("Brugerdata (første 10 rækker vist):")
