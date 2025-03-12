@@ -22,12 +22,17 @@ def clean_variant_key(value):
 
 def match_item_number(df, item_number_col, item_number):
     """Slår op på Item Nummer og håndterer delvise matches."""
-    match = df[df[item_number_col].str.lower() == item_number.lower()]
+    if item_number is None or pd.isna(item_number):
+        return None  # Hvis varenummeret mangler, returner None
+    
+    df = df.dropna(subset=[item_number_col])  # Fjern rækker, hvor opslag ikke kan ske
+    
+    match = df[df[item_number_col].str.lower() == str(item_number).lower()]
     if not match.empty:
         return match.iloc[0]
     
     # Hvis ikke eksakt match, prøv at matche første del før "-"
-    partial_key = item_number.split('-')[0].strip()
+    partial_key = str(item_number).split('-')[0].strip()
     match = df[df[item_number_col].str.lower().str.startswith(partial_key.lower())]
     return match.iloc[0] if not match.empty else None
 
@@ -42,7 +47,7 @@ def generate_ppt(user_data, variant_data, lifestyle_data, line_drawing_data, ins
         return None
     
     for _, row in user_data.iterrows():
-        item_number = row[item_number_col]
+        item_number = row[item_number_col] if pd.notna(row[item_number_col]) else None
         matched_row = match_item_number(variant_data, "VariantKey", item_number)  # Opdateret til at bruge VariantKey i variant_data
         
         slide = prs.slides.add_slide(prs.slide_layouts[5])
