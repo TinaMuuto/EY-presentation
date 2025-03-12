@@ -95,4 +95,324 @@ def lookup_packshot(item_no, variant_df):
 
 def lookup_lifestyle_images(item_no, variant_df, lifestyle_df):
     rows = match_variant_rows(item_no, variant_df)
-  
+    if rows.empty:
+        return []
+    product_key = rows.iloc[0].get("ProductKey", "")
+    if pd.isna(product_key) or not product_key:
+        return []
+    subset = lifestyle_df[lifestyle_df['ProductKey'].astype(str).str.lower() == str(product_key).lower()]
+    urls = subset['ResourceDestinationUrl'].dropna().astype(str).tolist()
+    return urls[:3]
+
+def lookup_line_drawings(item_no, variant_df, line_df):
+    rows = match_variant_rows(item_no, variant_df)
+    if rows.empty:
+        return []
+    product_key = rows.iloc[0].get("ProductKey", "")
+    if pd.isna(product_key) or not product_key:
+        return []
+    subset = line_df[line_df['ProductKey'].astype(str).str.lower() == str(product_key).lower()]
+    urls = subset['ResourceDestinationUrl'].dropna().astype(str).tolist()
+    return urls[:8]
+
+#############################################
+# 2) Slide-håndtering – Slet slides (workaround)
+#############################################
+
+def delete_slide(prs, slide):
+    xml_slides = prs.slides._sldIdLst  
+    slide_id = slide.slide_id
+    for sld in xml_slides:
+        if sld.get("id") == str(slide_id):
+            xml_slides.remove(sld)
+            break
+
+#############################################
+# 3) Kopiér slide fra template til final_pres
+#############################################
+
+def copy_slide_from_template(template_slide, target_pres):
+    try:
+        blank_layout = target_pres.slide_layouts[6]
+    except IndexError:
+        blank_layout = target_pres.slide_layouts[0]
+    new_slide = target_pres.slides.add_slide(blank_layout)
+    for shape in template_slide.shapes:
+        el = shape.element
+        new_el = copy.deepcopy(el)
+        new_slide.shapes._spTree.insert_element_before(new_el, 'p:extLst')
+    return new_slide
+
+#############################################
+# 4) Tekstudskiftning – Udskift placeholder på run-niveau og bevar formatering
+#############################################
+
+def replace_text_placeholders(slide, replacements):
+    for shape in slide.shapes:
+        if shape.has_text_frame:
+            for paragraph in shape.text_frame.paragraphs:
+                full_text = "".join(run.text for run in paragraph.runs)
+                new_text = full_text
+                for key, val in replacements.items():
+                    placeholder = f"{{{{{key}}}}}"
+                    new_text = new_text.replace(placeholder, val)
+                if new_text != full_text:
+                    # Bevar formateringen fra det første run
+                    if paragraph.runs:
+                        first_run = paragraph.runs[0]
+                        font_props = {
+                            "name": first_run.font.name,
+                            "size": first_run.font.size,
+                            "bold": first_run.font.bold,
+                            "italic": first_run.font.italic,
+                            "color": first_run.font.color.rgb if first_run.font.color and first_run.font.color.rgb else None,
+                        }
+                    else:
+                        font_props = None
+                    paragraph.clear()
+                    new_run = paragraph.add_run()
+                    new_run.text = new_text
+                    if font_props:
+                        new_run.font.name = font_props["name"]
+                        new_run.font.size = font_props["size"]
+                        new_run.font.bold = font_props["bold"]
+                        new_run.font.italic = font_props["italic"]
+                        if font_props["color"]:
+                            new_run.font.color.rgb = font_props["color"]
+
+#############################################
+# 5) Billedindsættelse – Nedskaler store billeder (maks 1920x1080)
+#############################################
+
+def insert_image(slide, placeholder, image_url):
+    if not image_url:
+        return
+    try:
+        try:
+            resample_filter = Image.Resampling.LANCZOS
+        except AttributeError:
+            resample_filter = Image.ANTIALIAS
+        for shape in slide.shapes:
+            if shape.has_text_frame and shape.text.strip() == f"{{{{{placeholder}}}}}":
+                left, top = shape.left, shape.top
+                max_w, max_h = shape.width, shape.height
+                resp = requests.get(image_url, timeout=10)
+                if resp.status_code == 200:
+                    img_data = io.BytesIO(resp.content)
+                    with Image.open(img_data) as im:
+                        # Nedskaler billedet, hvis det er for stort – maks 1920x1080
+                        MAX_SIZE = (1920, 1080)
+                        im.thumbnail(MAX_SIZE, resample=resample_filter)
+                        orig_w, orig_h = im.size
+                        scale = min(max_w / orig_w, max_h / orig_h)
+                        new_w = int(orig_w * scale)
+                        new_h = int(orig_h * scale)
+                        resized_im = im.resize((new_w, new_h), resample=resample_filter)
+                        output_io = io.BytesIO()
+                        # Gem som PNG uden yderligere komprimering
+                        resized_im.save(output_io, format="PNG")
+                        output_io.seek(0)
+                    slide.shapes.add_picture(output_io, left, top, width=new_w, height=new_h)
+                    shape.text = ""
+    except Exception as e:
+        st.warning(f"Kunne ikke hente billede fra {image_url}: {e}")
+
+#############################################
+# 6) Hyperlinkindsættelse – Forenklet metode
+#############################################
+
+def insert_hyperlink(slide, placeholder, display_text, url):
+    if not url:
+        return
+    for shape in slide.shapes:
+        if shape.has_text_frame and f"{{{{{placeholder}}}}}" in shape.text:
+            shape.text = shape.text.replace(f"{{{{{placeholder}}}}}", display_text)
+            for paragraph in shape.text_frame.paragraphs:
+                for run in paragraph.runs:
+                    if display_text in run.text:
+                        run.hyperlink.address = url
+
+#############################################
+# 7) Udfyld tekstfelter og hyperlinks – Fase 1
+#############################################
+
+def fill_text_fields(slide, product_row, variant_df):
+    item_no = str(product_row.get("Item no", "")).strip()
+    product_name = str(product_row.get("Product name", "")).strip()
+    replacements = {
+        "Product name": f"Product Name: {product_name}",
+        "Product code": f"Product Code: {item_no}",
+        "Product country of origin": f"Product Country of Origin: {lookup_single_value(item_no, variant_df, 'VariantCountryOfOrigin')}",
+        "Product height": f"Height: {lookup_single_value(item_no, variant_df, 'VariantHeight')}",
+        "Product width": f"Width: {lookup_single_value(item_no, variant_df, 'VariantWidth')}",
+        "Product length": f"Length: {lookup_single_value(item_no, variant_df, 'VariantLength')}",
+        "Product depth": f"Depth: {lookup_single_value(item_no, variant_df, 'VariantDepth')}",
+        "Product seat height": f"Seat Height: {lookup_single_value(item_no, variant_df, 'VariantSeatHeight')}",
+        "Product diameter": f"Diameter: {lookup_single_value(item_no, variant_df, 'VariantDiameter')}",
+        "CertificateName": f"Test & certificates for the product: {lookup_certificate(item_no, variant_df)}",
+        "Product Consumption COM": f"Consumption information for COM: {lookup_single_value(item_no, variant_df, 'ProductTextileConsumption_en')}",
+        "Product RTS": f"Product in stock versions: {lookup_rts(item_no, variant_df)}",
+        "Product MTO": f"Product in made to order versions: {lookup_mto(item_no, variant_df)}",
+        "Product Fact Sheet link": f"[Link to Product Fact Sheet]({lookup_single_value(item_no, variant_df, 'ProductFactSheetLink')})",
+        "Product configurator link": f"[Configure product here]({lookup_single_value(item_no, variant_df, 'ProductLinkToConfigurator')})",
+        "Product website link": f"[See product website]({lookup_single_value(item_no, variant_df, 'ProductWebsiteLink')})",
+    }
+    replace_text_placeholders(slide, replacements)
+    insert_hyperlink(slide, "Product Fact Sheet link", "Link to Product Fact Sheet", lookup_single_value(item_no, variant_df, "ProductFactSheetLink"))
+    insert_hyperlink(slide, "Product configurator link", "Configure product here", lookup_single_value(item_no, variant_df, "ProductLinkToConfigurator"))
+    insert_hyperlink(slide, "Product website link", "See product website", lookup_single_value(item_no, variant_df, "ProductWebsiteLink"))
+
+#############################################
+# 8) Udfyld billedfelter – Fase 2
+#############################################
+
+def fill_image_fields(slide, product_row, variant_df, lifestyle_df, line_df):
+    item_no = str(product_row.get("Item no", "")).strip()
+    packshot_url = lookup_packshot(item_no, variant_df)
+    insert_image(slide, "Product Packshot1", packshot_url)
+    lifestyle_urls = lookup_lifestyle_images(item_no, variant_df, lifestyle_df)
+    for i, url in enumerate(lifestyle_urls):
+        placeholder = f"Product Lifestyle{i+1}"
+        insert_image(slide, placeholder, url)
+    line_urls = lookup_line_drawings(item_no, variant_df, line_df)
+    for i, url in enumerate(line_urls):
+        placeholder = f"Product line drawing{i+1}"
+        insert_image(slide, placeholder, url)
+
+#############################################
+# 9) Ændringer for at fjerne uønsket grafik og sætte baggrund til sort
+#############################################
+
+def remove_unwanted_graphics(slide):
+    # Fjern eventuelle shapes som er placeret meget øverst og spænder næsten over hele slide bredden.
+    slide_width = slide.part.presentation.slide_width
+    shapes_to_remove = []
+    for shape in slide.shapes:
+        if shape.has_picture:
+            if shape.left == 0 and shape.top < 100 and shape.width >= slide_width * 0.9:
+                shapes_to_remove.append(shape)
+    for shape in shapes_to_remove:
+        sp = shape._element
+        sp.getparent().remove(sp)
+
+def set_slide_background_black(slide):
+    fill = slide.background.fill
+    fill.solid()
+    fill.fore_color.rgb = RGBColor(0, 0, 0)
+
+#############################################
+# 10) Udfyld slide for ét produkt – Samler fase 1 og 2 samt rensning af uønsket grafik
+#############################################
+
+def fill_slide(slide, product_row, variant_df, lifestyle_df, line_df):
+    fill_text_fields(slide, product_row, variant_df)
+    # Fjern uønsket grafik og sæt baggrund til sort
+    remove_unwanted_graphics(slide)
+    set_slide_background_black(slide)
+    fill_image_fields(slide, product_row, variant_df, lifestyle_df, line_df)
+
+#############################################
+# 11) Main – To-trins Workflow
+#############################################
+
+st.title("Automatisk Generering af Præsentationer – To-trins Workflow")
+
+st.markdown("""
+### **Trin 1: Generer Tekstpræsentation**
+1. Upload din Excel-fil med kolonnerne **Item no** og **Product name**.
+2. Appen genererer en PowerPoint-præsentation baseret på din template (template-generator.pptx), hvor alle tekstfelter og hyperlinks udfyldes.
+3. Download den tekstbaserede præsentation.
+
+---
+
+### **Trin 2: Tilføj Billeder**
+1. Upload den tekstbaserede præsentation (PPTX).
+2. Appen indsætter billeder (packshot, lifestyle og line drawings) baseret på dine eksterne datafiler.
+3. Download den opdaterede præsentation med billeder.
+""")
+
+phase = st.radio("Vælg procesfase", ("Generer tekstpræsentation", "Tilføj billeder til præsentation"))
+
+#############################################
+# Fase 1: Generer tekstpræsentation
+#############################################
+if phase == "Generer tekstpræsentation":
+    st.markdown("### Trin 1: Generer Tekstpræsentation")
+    uploaded_excel = st.file_uploader("Upload din Excel-fil med 'Item no' og 'Product name'", type=["xlsx"], key="excel")
+    if uploaded_excel:
+        try:
+            user_df = pd.read_excel(uploaded_excel)
+        except Exception as e:
+            st.error(f"Fejl ved indlæsning af Excel-fil: {e}")
+            st.stop()
+        item_no_col = find_column(user_df, ["item", "no"])
+        product_name_col = find_column(user_df, ["product", "name"])
+        if not item_no_col or not product_name_col:
+            st.error("Kunne ikke finde kolonner for 'Item no' og 'Product name'.")
+            st.stop()
+        user_df = user_df.rename(columns={item_no_col: "Item no", product_name_col: "Product name"})
+        user_df["Item no"] = user_df["Item no"].apply(str)
+        st.write("Viser de første 10 rækker fra din data:")
+        st.dataframe(user_df.head(10))
+        try:
+            variant_df = pd.read_excel("EY - variant master data.xlsx")
+            lifestyle_df = pd.read_excel("EY - lifestyle.xlsx")
+            line_df = pd.read_excel("EY - line drawing.xlsx")
+        except Exception as e:
+            st.error(f"Fejl ved indlæsning af eksterne datafiler: {e}")
+            st.stop()
+        try:
+            template_pres = Presentation("template-generator.pptx")
+            if not template_pres.slides:
+                st.error("Din template-præsentation har ingen slides.")
+                st.stop()
+            template_slide = template_pres.slides[0]
+        except Exception as e:
+            st.error(f"Fejl ved indlæsning af PowerPoint template: {e}")
+            st.stop()
+        final_pres = Presentation("template-generator.pptx")
+        for slide in list(final_pres.slides):
+            delete_slide(final_pres, slide)
+        for idx, row in user_df.iterrows():
+            new_slide = copy_slide_from_template(template_slide, final_pres)
+            fill_text_fields(new_slide, row, variant_df)
+        ppt_io = io.BytesIO()
+        final_pres.save(ppt_io)
+        ppt_io.seek(0)
+        st.download_button("Download tekstpræsentation", data=ppt_io, file_name="text_presentation.pptx")
+
+#############################################
+# Fase 2: Tilføj billeder til præsentation
+#############################################
+elif phase == "Tilføj billeder til præsentation":
+    st.markdown("### Trin 2: Tilføj Billeder")
+    uploaded_pptx = st.file_uploader("Upload din tekstbaserede præsentation (PPTX)", type=["pptx"], key="pptx")
+    if uploaded_pptx:
+        try:
+            pres = Presentation(uploaded_pptx)
+        except Exception as e:
+            st.error(f"Fejl ved indlæsning af PowerPoint-fil: {e}")
+            st.stop()
+        try:
+            variant_df = pd.read_excel("EY - variant master data.xlsx")
+            lifestyle_df = pd.read_excel("EY - lifestyle.xlsx")
+            line_df = pd.read_excel("EY - line drawing.xlsx")
+        except Exception as e:
+            st.error(f"Fejl ved indlæsning af eksterne datafiler: {e}")
+            st.stop()
+        for slide in pres.slides:
+            item_no = ""
+            for shape in slide.shapes:
+                if shape.has_text_frame and "Product Code:" in shape.text:
+                    match = re.search(r"Product Code:\s*(.*)", shape.text)
+                    if match:
+                        item_no = match.group(1).split("\n")[0].strip()
+                        break
+            if item_no:
+                fill_image_fields(slide, item_no, variant_df, lifestyle_df, line_df)
+            else:
+                st.warning("Kunne ikke udtrække 'Product Code' fra en slide – billeder indsættes ikke for denne slide.")
+        ppt_io = io.BytesIO()
+        pres.save(ppt_io)
+        ppt_io.seek(0)
+        st.download_button("Download præsentation med billeder", data=ppt_io, file_name="final_presentation.pptx")
