@@ -43,7 +43,7 @@ def generate_ppt(user_data, variant_data, lifestyle_data, line_drawing_data, ins
     
     for _, row in user_data.iterrows():
         item_number = row[item_number_col]
-        matched_row = match_item_number(variant_data, "Item Nummer", item_number)
+        matched_row = match_item_number(variant_data, "VariantKey", item_number)  # Opdateret til at bruge VariantKey i variant_data
         
         slide = prs.slides.add_slide(prs.slide_layouts[5])
         
@@ -68,7 +68,7 @@ def generate_ppt(user_data, variant_data, lifestyle_data, line_drawing_data, ins
     ppt_bytes.seek(0)
     return ppt_bytes
 
-st.title("PowerPoint Generator 📊")
+st.title("PowerPoint Generator")
 
 # Fast PowerPoint skabelon (ingen upload-mulighed)
 template_path = "Appendix 1 - Ancillary Furniture and Accessories Catalogue _ CLE.pptx"
