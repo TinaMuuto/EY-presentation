@@ -53,26 +53,28 @@ def generate_ppt(user_data, variant_data, lifestyle_data, line_drawing_data, ins
     ppt_bytes.seek(0)
     return ppt_bytes
 
-st.title("PowerPoint Generator 📊")
+st.title("EY PowerPoint Generator")
 
-user_file = st.file_uploader("Upload brugers Excel-fil", type=["xlsx"])
-variant_file = st.file_uploader("Upload 'EY - variant master data'", type=["xlsx"])
-lifestyle_file = st.file_uploader("Upload 'EY - lifestyle'", type=["xlsx"])
-line_drawing_file = st.file_uploader("Upload 'EY - line drawing'", type=["xlsx"])
-instruktioner_file = st.file_uploader("Upload 'Instruktioner'", type=["xlsx"])
-template_default = "Appendix 1 - Ancillary Furniture and Accessories Catalogue _ CLE.pptx"
-template_file = st.file_uploader("Upload PowerPoint skabelon", type=["pptx"])
-if template_file is None:
-    template_file = template_default  # Brug standardfilen
+# Fast PowerPoint skabelon (ingen upload-mulighed)
+template_path = "Appendix 1 - Ancillary Furniture and Accessories Catalogue _ CLE.pptx"
 
-if st.button("Generér PowerPoint") and all([user_file, variant_file, lifestyle_file, line_drawing_file, instruktioner_file, template_file]):
+# Fastlagte datafiler i GitHub
+variant_data_path = "EY - variant master data.xlsx"
+lifestyle_data_path = "EY - lifestyle.xlsx"
+line_drawing_data_path = "EY - line drawing.xlsx"
+instruktioner_path = "instruktioner.xlsx"
+
+# Upload kun produktlisten
+user_file = st.file_uploader("Upload brugers produktliste (Excel)", type=["xlsx"])
+
+if st.button("Generér PowerPoint") and user_file:
     user_data = pd.read_excel(user_file)
-    variant_data = pd.read_excel(variant_file)
-    lifestyle_data = pd.read_excel(lifestyle_file)
-    line_drawing_data = pd.read_excel(line_drawing_file)
-    instruktioner = pd.read_excel(instruktioner_file)
+    variant_data = pd.read_excel(variant_data_path)
+    lifestyle_data = pd.read_excel(lifestyle_data_path)
+    line_drawing_data = pd.read_excel(line_drawing_data_path)
+    instruktioner = pd.read_excel(instruktioner_path)
     
-    ppt_bytes = generate_ppt(user_data, variant_data, lifestyle_data, line_drawing_data, instruktioner, template_file)
+    ppt_bytes = generate_ppt(user_data, variant_data, lifestyle_data, line_drawing_data, instruktioner, template_path)
     
     st.success("PowerPoint genereret!")
     st.download_button(
