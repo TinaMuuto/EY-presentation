@@ -115,14 +115,10 @@ def lookup_line_drawings(item_no, variant_df, line_df):
     return urls[:8]
 
 #############################################
-# 2) Slide-håndtering – Fjern slides (workaround)
+# 2) Slide-håndtering – Slet slides (workaround)
 #############################################
 
 def delete_slide(prs, slide):
-    """
-    Sletter en slide fra præsentationen ved at fjerne dens XML-element fra _sldIdLst.
-    Bemærk: Dette er en workaround, da python-pptx ikke tilbyder en officiel API.
-    """
     xml_slides = prs.slides._sldIdLst  
     slide_id = slide.slide_id
     for sld in xml_slides:
@@ -147,21 +143,45 @@ def copy_slide_from_template(template_slide, target_pres):
     return new_slide
 
 #############################################
-# 4) Tekstudskiftning – indsætter tekst som ren tekst
+# 4) Tekstudskiftning – Erstat placeholder-tekst på run-niveau
 #############################################
 
 def replace_text_placeholders(slide, replacements):
     for shape in slide.shapes:
         if shape.has_text_frame:
             for paragraph in shape.text_frame.paragraphs:
-                for run in paragraph.runs:
-                    for key, val in replacements.items():
-                        placeholder = f"{{{{{key}}}}}"
-                        if placeholder in run.text:
-                            run.text = run.text.replace(placeholder, val)
+                # Saml teksten fra alle runs i afsnittet
+                full_text = "".join(run.text for run in paragraph.runs)
+                new_text = full_text
+                for key, val in replacements.items():
+                    placeholder = f"{{{{{key}}}}}"
+                    new_text = new_text.replace(placeholder, val)
+                if new_text != full_text:
+                    # Bevar formateringen fra det første run
+                    if paragraph.runs:
+                        first_run = paragraph.runs[0]
+                        font_props = {
+                            "name": first_run.font.name,
+                            "size": first_run.font.size,
+                            "bold": first_run.font.bold,
+                            "italic": first_run.font.italic,
+                            "color": first_run.font.color.rgb if first_run.font.color and first_run.font.color.rgb else None,
+                        }
+                    else:
+                        font_props = None
+                    paragraph.clear()
+                    new_run = paragraph.add_run()
+                    new_run.text = new_text
+                    if font_props:
+                        new_run.font.name = font_props["name"]
+                        new_run.font.size = font_props["size"]
+                        new_run.font.bold = font_props["bold"]
+                        new_run.font.italic = font_props["italic"]
+                        if font_props["color"]:
+                            new_run.font.color.rgb = font_props["color"]
 
 #############################################
-# 5) Billedindsættelse – nedskalerer store billeder
+# 5) Billedindsættelse – Nedskalerer store billeder
 #############################################
 
 def insert_image(slide, placeholder, image_url):
@@ -180,7 +200,7 @@ def insert_image(slide, placeholder, image_url):
                 if resp.status_code == 200:
                     img_data = io.BytesIO(resp.content)
                     with Image.open(img_data) as im:
-                        # Nedskaler billedet, hvis det er for stort – maks 1920x1080
+                        # Nedskaler billedet, hvis det er for stort – fx maks 1920x1080
                         MAX_SIZE = (1920, 1080)
                         im.thumbnail(MAX_SIZE, resample=resample_filter)
                         orig_w, orig_h = im.size
@@ -198,7 +218,7 @@ def insert_image(slide, placeholder, image_url):
         st.warning(f"Kunne ikke hente billede fra {image_url}: {e}")
 
 #############################################
-# 6) Hyperlinkindsættelse – forenklet metode
+# 6) Hyperlinkindsættelse – Forenklet metode
 #############################################
 
 def insert_hyperlink(slide, placeholder, display_text, url):
@@ -260,7 +280,7 @@ def fill_image_fields(slide, product_row, variant_df, lifestyle_df, line_df):
         insert_image(slide, placeholder, url)
 
 #############################################
-# 9) Fuld udfyldning af slide (fase 1 og 2)
+# 9) Udfyld slide for ét produkt – Samler fase 1 og 2
 #############################################
 
 def fill_slide(slide, product_row, variant_df, lifestyle_df, line_df):
@@ -268,7 +288,7 @@ def fill_slide(slide, product_row, variant_df, lifestyle_df, line_df):
     fill_image_fields(slide, product_row, variant_df, lifestyle_df, line_df)
 
 #############################################
-# 10) Main – Two-phase Workflow
+# 10) Main – To-trins Workflow
 #############################################
 
 st.title("Automatisk Generering af Præsentationer – To-trins Workflow")
@@ -318,7 +338,6 @@ if phase == "Generer tekstpræsentation":
             st.error(f"Fejl ved indlæsning af eksterne datafiler: {e}")
             st.stop()
         try:
-            # Indlæs templaten fra git
             template_pres = Presentation("template-generator.pptx")
             if not template_pres.slides:
                 st.error("Din template-præsentation har ingen slides.")
@@ -329,7 +348,7 @@ if phase == "Generer tekstpræsentation":
             st.stop()
         # Opret en ny præsentation baseret på templaten
         final_pres = Presentation("template-generator.pptx")
-        # Fjern alle eksisterende slides fra final_pres (brug delete_slide workaround)
+        # Fjern alle eksisterende slides fra final_pres
         for slide in list(final_pres.slides):
             delete_slide(final_pres, slide)
         for idx, row in user_df.iterrows():
@@ -359,7 +378,6 @@ elif phase == "Tilføj billeder til præsentation":
         except Exception as e:
             st.error(f"Fejl ved indlæsning af eksterne datafiler: {e}")
             st.stop()
-        # For hver slide, udtræk Item no og indsæt billeder
         for slide in pres.slides:
             item_no = ""
             for shape in slide.shapes:
@@ -371,19 +389,8 @@ elif phase == "Tilføj billeder til præsentation":
             if item_no:
                 fill_image_fields(slide, item_no, variant_df, lifestyle_df, line_df)
             else:
-                st.warning("Kunne ikke udtrække 'Product Code' fra en slide. Billeder indsættes ikke for denne slide.")
+                st.warning("Kunne ikke udtrække 'Product Code' fra en slide – billeder indsættes ikke for denne slide.")
         ppt_io = io.BytesIO()
         pres.save(ppt_io)
         ppt_io.seek(0)
         st.download_button("Download præsentation med billeder", data=ppt_io, file_name="final_presentation.pptx")
-
-#############################################
-# Hjælpefunktion til at slette slides fra en præsentation
-#############################################
-def delete_slide(prs, slide):
-    xml_slides = prs.slides._sldIdLst
-    slide_id = slide.slide_id
-    for sld in xml_slides:
-        if sld.get("id") == str(slide_id):
-            xml_slides.remove(sld)
-            break
