@@ -6,6 +6,7 @@ import io
 import re
 import copy
 import requests
+from PIL import Image
 
 # Hjælpefunktion: Find kolonne baseret på nøgleord (ignorér store/små bogstaver)
 def find_column(df, keywords):
@@ -14,14 +15,17 @@ def find_column(df, keywords):
             return col
     return None
 
-# Funktion der returnerer alle rækker i variant data, der matcher et Item no.
+# Normaliser VariantKey ved at fjerne " - config"
+def normalize_variant_key(key):
+    return str(key).replace(" - config", "").strip().lower()
+
+# Returner alle rækker i variant data, der matcher et Item no.
 def get_variant_matches(item_no, variant_df):
     normalized_item = str(item_no).strip().lower()
-    # Fjern " - config" fra VariantKey og normalisér
-    variant_df['VariantKey_norm'] = variant_df['VariantKey'].astype(str).str.replace(" - config", "", regex=False).str.strip().str.lower()
+    variant_df['VariantKey_norm'] = variant_df['VariantKey'].astype(str).apply(normalize_variant_key)
     matches = variant_df[variant_df['VariantKey_norm'] == normalized_item]
     if matches.empty:
-        # Hvis intet eksakt match – prøv med delvist match: alt før "-"
+        # Prøv med delvist match: alt før "-"
         part = normalized_item.split("-")[0]
         matches = variant_df[variant_df['VariantKey_norm'].str.startswith(part)]
     return matches
@@ -62,7 +66,6 @@ def lookup_product_MTO(item_no, variant_df):
     return "\n".join(results)
 
 def lookup_certificate(item_no, variant_df):
-    # Filtrer for rækker hvor sys_entitytype er "Certificate"
     variant_df_cert = variant_df[variant_df['sys_entitytype'].astype(str).str.lower() == "certificate"]
     matches = get_variant_matches(item_no, variant_df_cert)
     if matches.empty:
@@ -95,37 +98,59 @@ def lookup_packshot(item_no, variant_df):
 def lookup_lifestyle_images(item_no, variant_df, lifestyle_df):
     matches = get_variant_matches(item_no, variant_df)
     if matches.empty:
-        return ["", "", ""]
+        return []
     product_key = matches.iloc[0].get("ProductKey", "")
     if pd.isna(product_key) or product_key == "":
-        return ["", "", ""]
+        return []
     rows = lifestyle_df[lifestyle_df['ProductKey'].astype(str).str.lower() == str(product_key).lower()]
     urls = rows['ResourceDestinationUrl'].dropna().astype(str).tolist()
-    urls = urls[:3] + [""] * (3 - len(urls))
-    return urls
+    return urls  # Returnér alle URL'er
 
 def lookup_line_drawing_images(item_no, variant_df, line_drawing_df):
     matches = get_variant_matches(item_no, variant_df)
     if matches.empty:
-        return [""] * 8
+        return []
     product_key = matches.iloc[0].get("ProductKey", "")
     if pd.isna(product_key) or product_key == "":
-        return [""] * 8
+        return []
     rows = line_drawing_df[line_drawing_df['ProductKey'].astype(str).str.lower() == str(product_key).lower()]
     urls = rows['ResourceDestinationUrl'].dropna().astype(str).tolist()
-    urls = urls[:8] + [""] * (8 - len(urls))
-    return urls
+    return urls  # Returnér alle URL'er
 
 # Funktion til at duplikere en slide (kopierer indholdet fra en template slide)
 def duplicate_slide(pres, slide):
     slide_layout = slide.slide_layout
     new_slide = pres.slides.add_slide(slide_layout)
-    # Kopiér alle shapes med en deepcopy
     for shape in slide.shapes:
         el = shape.element
         new_el = copy.deepcopy(el)
         new_slide.shapes._spTree.insert_element_before(new_el, 'p:extLst')
     return new_slide
+
+# Opdateret funktion der erstatter en billede-placeholder med et billede hentet fra en URL,
+# og som bevarer billedets oprindelige forhold
+def replace_image_placeholder(slide, placeholder, image_url):
+    for shape in slide.shapes:
+        if shape.has_text_frame and shape.text.strip() == "{{" + placeholder + "}}":
+            left = shape.left
+            top = shape.top
+            max_width = shape.width
+            max_height = shape.height
+            try:
+                response = requests.get(image_url, timeout=10)
+                if response.status_code == 200:
+                    image_data = io.BytesIO(response.content)
+                    with Image.open(image_data) as img:
+                        original_width, original_height = img.size
+                        scale = min(max_width / original_width, max_height / original_height)
+                        new_width = int(original_width * scale)
+                        new_height = int(original_height * scale)
+                    # Nulstil pointeren for billed-data
+                    image_data.seek(0)
+                    slide.shapes.add_picture(image_data, left, top, width=new_width, height=new_height)
+                    shape.text = ""
+            except Exception as e:
+                st.error(f"Fejl ved hentning af billede for {placeholder}: {e}")
 
 # Funktion der erstatter tekst placeholders i en slide
 def replace_placeholders(slide, replacements):
@@ -138,30 +163,12 @@ def replace_placeholders(slide, replacements):
                         if placeholder in run.text:
                             run.text = run.text.replace(placeholder, value)
 
-# Funktion der erstatter en billede-placeholder med et billede hentet fra en URL
-def replace_image_placeholder(slide, placeholder, image_url):
-    for shape in slide.shapes:
-        if shape.has_text_frame and shape.text.strip() == "{{" + placeholder + "}}":
-            left = shape.left
-            top = shape.top
-            width = shape.width
-            height = shape.height
-            try:
-                response = requests.get(image_url)
-                if response.status_code == 200:
-                    image_data = io.BytesIO(response.content)
-                    slide.shapes.add_picture(image_data, left, top, width=width, height=height)
-                    # Fjern placeholder-teksten
-                    shape.text = ""
-            except Exception as e:
-                st.error(f"Fejl ved hentning af billede for {placeholder}: {e}")
-
-# Funktion der processerer ét produkt: udtræk data, erstat felter og indsæt billeder
+# Processér ét produkt: udtræk data, erstat felter og indsæt billeder
 def process_product(slide, product, variant_df, lifestyle_df, line_drawing_df):
     item_no = str(product.get("Item no", "")).strip()
     product_name = str(product.get("Product name", "")).strip()
     
-    # Lav ordbog til tekstfelter med de ønskede formateringer
+    # Ordbog til tekstfelter
     replacements = {
         "Product name": "Product Name: " + product_name,
         "Product code": "Product Code: " + item_no,
@@ -183,22 +190,22 @@ def process_product(slide, product, variant_df, lifestyle_df, line_drawing_df):
     
     replace_placeholders(slide, replacements)
     
-    # Hent og indsæt billeder
+    # Indsæt packshot billede
     packshot_url = lookup_packshot(item_no, variant_df)
     if packshot_url:
         replace_image_placeholder(slide, "Product Packshot1", packshot_url)
     
+    # Indsæt lifestyle-billeder (alle fundne URL'er)
     lifestyle_urls = lookup_lifestyle_images(item_no, variant_df, lifestyle_df)
-    for i in range(3):
+    for i, url in enumerate(lifestyle_urls):
         placeholder = f"Product Lifestyle{i+1}"
-        if lifestyle_urls[i]:
-            replace_image_placeholder(slide, placeholder, lifestyle_urls[i])
+        replace_image_placeholder(slide, placeholder, url)
     
+    # Indsæt line drawing-billeder (alle fundne URL'er)
     line_drawing_urls = lookup_line_drawing_images(item_no, variant_df, line_drawing_df)
-    for i in range(8):
+    for i, url in enumerate(line_drawing_urls):
         placeholder = f"Product line drawing{i+1}"
-        if line_drawing_urls[i]:
-            replace_image_placeholder(slide, placeholder, line_drawing_urls[i])
+        replace_image_placeholder(slide, placeholder, url)
 
 ##############################################
 # Hoveddel af Streamlit-appen
@@ -224,7 +231,7 @@ if uploaded_file is not None:
         st.write("Brugerdata:")
         st.dataframe(user_df)
         
-        # Indlæs de eksterne datafiler – her forudsættes det, at de ligger lokalt
+        # Indlæs de eksterne datafiler – forudsætter at de ligger lokalt
         try:
             variant_df = pd.read_excel("EY - variant master data.xlsx")
             lifestyle_df = pd.read_excel("EY - lifestyle.xlsx")
@@ -238,15 +245,15 @@ if uploaded_file is not None:
         except Exception as e:
             st.error(f"Fejl ved indlæsning af PowerPoint template: {e}")
         
-        # Antag, at templaten har én slide, som skal duplikeres for hvert produkt.
+        # Antag at templaten har én slide, som skal duplikeres for hvert produkt.
         template_slide = prs.slides[0]
         
-        # Processér det første produkt på den eksisterende slide
+        # Processér første produkt på templaten
         if len(user_df) > 0:
             product = user_df.iloc[0]
             process_product(template_slide, product, variant_df, lifestyle_df, line_drawing_df)
         
-        # For de resterende produkter: duplikér templaten og processér
+        # For resterende produkter: duplikér templaten og processér
         for idx in range(1, len(user_df)):
             product = user_df.iloc[idx]
             new_slide = duplicate_slide(prs, template_slide)
