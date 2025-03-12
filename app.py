@@ -36,8 +36,17 @@ def match_item_number(df, item_number_col, item_number):
     match = df[df[item_number_col].str.lower().str.startswith(partial_key.lower())]
     return match.iloc[0] if not match.empty else None
 
-def generate_ppt(user_data, variant_data, lifestyle_data, line_drawing_data, instruktioner, template_path):
+def generate_ppt(user_data, variant_data, lifestyle_data, line_drawing_data, template_path):
     prs = Presentation(template_path)
+    
+    # Hardcoded instruktioner - Mapping mellem PowerPoint felter og datakilder
+    instruktioner = [
+        {"ppt_field": "Product Name", "source": "User upload sheet", "headline": "Navn: "},
+        {"ppt_field": "Product Code", "source": "User upload sheet", "headline": "Kode: "},
+        {"ppt_field": "Variant Description", "source": "EY - variant master data", "headline": "Variant: "},
+        {"ppt_field": "Product Lifestyle1", "source": "EY - lifestyle", "headline": "Lifestyle Billede 1: "},
+        {"ppt_field": "Product Line Drawing1", "source": "EY - line drawing", "headline": "Linjetegning 1: "},
+    ]
     
     # Find korrekt kolonnenavn for varenummer
     possible_item_cols = ["Item Nummer", "Item Number", "item number", "Item no", "ITEM NO", "Item No"]
@@ -52,16 +61,16 @@ def generate_ppt(user_data, variant_data, lifestyle_data, line_drawing_data, ins
         
         slide = prs.slides.add_slide(prs.slide_layouts[5])
         
-        for _, instr_row in instruktioner.iterrows():
-            ppt_field = instr_row['Field name power point']
-            field_source = instr_row['Instruktion']
-            headline = instr_row['Field headline']
+        for instr in instruktioner:
+            ppt_field = instr['ppt_field']
+            field_source = instr['source']
+            headline = instr['headline']
             
             value = ""
             if "User upload sheet" in field_source:
-                value = row.get(ppt_field.replace("{{", "").replace("}}", ""), "")
+                value = row.get(ppt_field, "")
             elif "EY - variant master data" in field_source and matched_row is not None:
-                value = matched_row.get(ppt_field.replace("{{", "").replace("}}", ""), "")
+                value = matched_row.get(ppt_field, "")
             
             if value and isinstance(value, str):
                 for shape in slide.shapes:
@@ -82,7 +91,6 @@ template_path = "Appendix 1 - Ancillary Furniture and Accessories Catalogue _ CL
 variant_data_path = "EY - variant master data.xlsx"
 lifestyle_data_path = "EY - lifestyle.xlsx"
 line_drawing_data_path = "EY - line drawing.xlsx"
-instruktioner_path = "instruktioner.xlsx"
 
 # Upload kun produktlisten
 user_file = st.file_uploader("Upload brugers produktliste (Excel)", type=["xlsx"])
@@ -93,9 +101,8 @@ if st.button("Generér PowerPoint") and user_file:
         variant_data = pd.read_excel(variant_data_path)
         lifestyle_data = pd.read_excel(lifestyle_data_path)
         line_drawing_data = pd.read_excel(line_drawing_data_path)
-        instruktioner = pd.read_excel(instruktioner_path)
         
-        ppt_bytes = generate_ppt(user_data, variant_data, lifestyle_data, line_drawing_data, instruktioner, template_path)
+        ppt_bytes = generate_ppt(user_data, variant_data, lifestyle_data, line_drawing_data, template_path)
         
         if ppt_bytes:
             st.success("PowerPoint genereret!")
