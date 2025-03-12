@@ -7,7 +7,7 @@ import requests
 from PIL import Image
 from pptx.opc.constants import RELATIONSHIP_TYPE as RT
 
-# For at undgå advarsler ved meget store billeder
+# Undgå decompression bomb-advarsler (vær opmærksom på risikoen, hvis du behandler meget store billeder)
 Image.MAX_IMAGE_PIXELS = None
 
 ##############################################################################
@@ -148,12 +148,10 @@ def replace_text_placeholders(slide, replacements):
 def insert_image_in_placeholder(slide, placeholder, image_url):
     if not image_url:
         return
-    # Bestem resample-filter med fallback
     try:
         resample_filter = Image.Resampling.LANCZOS
     except AttributeError:
         resample_filter = Image.ANTIALIAS
-
     for shape in slide.shapes:
         if shape.has_text_frame and shape.text.strip() == f"{{{{{placeholder}}}}}":
             left, top = shape.left, shape.top
@@ -167,12 +165,11 @@ def insert_image_in_placeholder(slide, placeholder, image_url):
                         scale = min(max_w / w, max_h / h)
                         new_w = int(w * scale)
                         new_h = int(h * scale)
-                        # Resize billedet med det valgte resample-filter
+                        # Resize billedet med det bestemte resample-filter
                         resized_im = im.resize((new_w, new_h), resample=resample_filter)
-                        # Konverter til RGB hvis nødvendigt
                         if resized_im.mode not in ("RGB", "L"):
                             resized_im = resized_im.convert("RGB")
-                        # Gem som JPEG med reduceret kvalitet for at komprimere
+                        # Gem som JPEG med reduceret kvalitet for at komprimere filstørrelsen
                         output_io = io.BytesIO()
                         resized_im.save(output_io, format="JPEG", quality=70)
                         output_io.seek(0)
@@ -269,10 +266,12 @@ if uploaded_file:
         st.stop()
     
     user_df = user_df.rename(columns={item_no_col: "Item no", product_name_col: "Product name"})
-    user_df["Item no"] = user_df["Item no"].astype(str)
+    # Konverter 'Item no' til string for at undgå typekonverteringsproblemer
+    user_df["Item no"] = user_df["Item no"].apply(str)
     
     st.write("Brugerdata (første 10 rækker vist):")
-    st.dataframe(user_df.head(10))
+    # Brug st.write for at undgå Arrow-konverteringsfejl
+    st.write(user_df.head(10).astype(str))
     
     try:
         variant_df = pd.read_excel("EY - variant master data.xlsx")
