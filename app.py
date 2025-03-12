@@ -221,10 +221,8 @@ def replace_hyperlink_placeholder(slide, placeholder, display_text, url):
             p = shape.text_frame.paragraphs[0]
             run = p.add_run()
             run.text = display_text
-            rPr = run._r.get_or_add_rPr()
-            hlink = rPr.add_hlinkClick(rId="")
-            run.part.relate_to(url, RT.HYPERLINK, is_external=True)
-            hlink.set('r:id', run.part.rels[-1].rId)
+            # Brug python-pptx's indbyggede hyperlink support
+            run.hyperlink.address = url
 
 ##############################################################################
 # 4) Udfyld slide for ét produkt
