@@ -153,11 +153,12 @@ def copy_slide_from_template(template_slide, target_pres):
 def replace_text_placeholders(slide, replacements):
     for shape in slide.shapes:
         if shape.has_text_frame:
-            text = shape.text
-            for key, val in replacements.items():
-                placeholder = f"{{{{{key}}}}}"
-                text = text.replace(placeholder, val)
-            shape.text = text
+            for paragraph in shape.text_frame.paragraphs:
+                for run in paragraph.runs:
+                    for key, val in replacements.items():
+                        placeholder = f"{{{{{key}}}}}"
+                        if placeholder in run.text:
+                            run.text = run.text.replace(placeholder, val)
 
 #############################################
 # 5) Billedindsættelse – nedskalerer store billeder
