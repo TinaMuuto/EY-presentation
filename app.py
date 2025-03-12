@@ -20,29 +20,30 @@ def clean_variant_key(value):
         value = value.lower().replace(" - config", "").strip()
     return value
 
-def match_item_number(df, item_number):
+def match_item_number(df, item_number_col, item_number):
     """Slår op på Item Nummer og håndterer delvise matches."""
-    match = df[df['Item Nummer'].str.lower() == item_number.lower()]
+    match = df[df[item_number_col].str.lower() == item_number.lower()]
     if not match.empty:
         return match.iloc[0]
     
     # Hvis ikke eksakt match, prøv at matche første del før "-"
     partial_key = item_number.split('-')[0].strip()
-    match = df[df['Item Nummer'].str.lower().str.startswith(partial_key.lower())]
+    match = df[df[item_number_col].str.lower().str.startswith(partial_key.lower())]
     return match.iloc[0] if not match.empty else None
 
 def generate_ppt(user_data, variant_data, lifestyle_data, line_drawing_data, instruktioner, template_path):
     prs = Presentation(template_path)
     
     # Find korrekt kolonnenavn for varenummer
-    item_number_col = find_column(user_data, ["Item Nummer", "Item Number", "item number", "Item no", "ITEM NO", "Item No"])
+    possible_item_cols = ["Item Nummer", "Item Number", "item number", "Item no", "ITEM NO", "Item No"]
+    item_number_col = find_column(user_data, possible_item_cols)
     if not item_number_col:
-        st.error("Fejl: Kolonnen med varenummer (Item Nummer) blev ikke fundet. Tjek at din fil har en af de understøttede kolonnenavne.")
+        st.error("Fejl: Kolonnen med varenummer blev ikke fundet. Sørg for, at din fil har en af følgende kolonnenavne: " + ", ".join(possible_item_cols))
         return None
     
     for _, row in user_data.iterrows():
         item_number = row[item_number_col]
-        matched_row = match_item_number(variant_data, item_number)
+        matched_row = match_item_number(variant_data, "Item Nummer", item_number)
         
         slide = prs.slides.add_slide(prs.slide_layouts[5])
         
