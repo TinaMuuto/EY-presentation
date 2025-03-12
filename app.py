@@ -114,21 +114,29 @@ def lookup_line_drawings(item_no, variant_df, line_df):
     return urls[:8]
 
 ##############################################################################
-# 2) Duplikeringsfunktion (brug samme layout som originalen)
+# 2) Funktion til at kopiere en slide fra template til målpræsentation
 ##############################################################################
 
-def duplicate_slide_in_same_presentation(prs, slide_index=0):
-    source_slide = prs.slides[slide_index]
-    slide_layout = source_slide.slide_layout
-    new_slide = prs.slides.add_slide(slide_layout)
-    for shape in source_slide.shapes:
+def copy_slide_from_template(template_slide, target_presentation):
+    """
+    Kopierer template_slide til target_presentation.
+    Bemærk: Vi antager, at target_presentation har et gyldigt slide_layout, f.eks. vi bruger layout index 6.
+    """
+    # Hvis target_presentation ikke har nogen slides, skal vi vælge et layout.
+    # Vi prøver at bruge layout index 6 – hvis det ikke findes, så vælg layout 0.
+    try:
+        blank_layout = target_presentation.slide_layouts[6]
+    except IndexError:
+        blank_layout = target_presentation.slide_layouts[0]
+    new_slide = target_presentation.slides.add_slide(blank_layout)
+    for shape in template_slide.shapes:
         el = shape.element
         new_el = copy.deepcopy(el)
         new_slide.shapes._spTree.insert_element_before(new_el, 'p:extLst')
     return new_slide
 
 ##############################################################################
-# 3) Tekstudskiftning – indsætter som ren tekst (så templatedesign bevares)
+# 3) Tekstudskiftning – indsætter som ren tekst (global udskiftning)
 ##############################################################################
 
 def replace_text_placeholders(slide, replacements):
@@ -141,7 +149,7 @@ def replace_text_placeholders(slide, replacements):
             shape.text = text
 
 ##############################################################################
-# 4) Billedindsættelse med maks. opløsning (nedskalerer store billeder)
+# 4) Billedindsættelse med maksimal opløsning (nedskalerer store billeder)
 ##############################################################################
 
 def insert_image(slide, placeholder, image_url):
@@ -160,17 +168,16 @@ def insert_image(slide, placeholder, image_url):
                 if resp.status_code == 200:
                     img_data = io.BytesIO(resp.content)
                     with Image.open(img_data) as im:
-                        # Nedskaler billedet hvis det er for stort (maks 1920x1080)
+                        # Nedskaler billedet, hvis det er for stort, fx til maks 1920x1080
                         MAX_SIZE = (1920, 1080)
                         im.thumbnail(MAX_SIZE, resample=resample_filter)
                         orig_w, orig_h = im.size
                         scale = min(max_w / orig_w, max_h / orig_h)
                         new_w = int(orig_w * scale)
                         new_h = int(orig_h * scale)
-                        # Resize billedet til den ønskede størrelse
                         resized_im = im.resize((new_w, new_h), resample=resample_filter)
-                        # Gem som PNG uden yderligere komprimering
                         output_io = io.BytesIO()
+                        # Gem som PNG (ingen komprimering)
                         resized_im.save(output_io, format="PNG")
                         output_io.seek(0)
                     slide.shapes.add_picture(output_io, left, top, width=new_w, height=new_h)
@@ -241,7 +248,7 @@ def fill_image_fields(slide, product_row, variant_df, lifestyle_df, line_df):
         insert_image(slide, placeholder, url)
 
 ##############################################################################
-# 8) Udfyld slide for ét produkt (først tekst/hyperlinks, derefter billeder)
+# 8) Udfyld slide for ét produkt (først tekst, derefter billeder)
 ##############################################################################
 
 def fill_slide(slide, product_row, variant_df, lifestyle_df, line_df):
@@ -286,7 +293,7 @@ if uploaded_file:
         st.error(f"Fejl ved indlæsning af PowerPoint template: {e}")
         st.stop()
     final_pres = Presentation()
-    # Fjern evt. den auto-genererede slide, hvis den findes
+    # Fjern evt. den auto-genererede tomme slide
     while len(final_pres.slides) > 0:
         r_id = final_pres.slides[0].slide_id
         final_pres.slides.remove(final_pres.slides.get(slide_id=r_id))
