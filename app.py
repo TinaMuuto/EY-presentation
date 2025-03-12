@@ -7,14 +7,14 @@ import requests
 from PIL import Image
 from pptx.opc.constants import RELATIONSHIP_TYPE as RT
 
+# For at undgå advarsler ved meget store billeder
+Image.MAX_IMAGE_PIXELS = None
+
 ##############################################################################
-# 1) Hjælpefunktioner til at finde og matche data
+# 1) Hjælpefunktioner til dataopslag
 ##############################################################################
 
 def find_column(df, keywords):
-    """
-    Finder kolonnen i df, hvis den indeholder alle ord i 'keywords' (ignorér store/små bogstaver).
-    """
     for col in df.columns:
         col_lower = col.lower().replace("_", " ")
         if all(kw in col_lower for kw in keywords):
@@ -22,18 +22,9 @@ def find_column(df, keywords):
     return None
 
 def normalize_variantkey(s):
-    """
-    Fjerner ' - config' (hvis det findes) og konverterer til små bogstaver.
-    """
     return str(s).lower().replace(" - config", "").strip()
 
 def match_variant_rows(item_no, variant_df):
-    """
-    Matcher item_no mod 'VariantKey' i variant_df.
-    1) Forsøger et eksakt match (efter normalisering).
-    2) Hvis intet match, fjernes alt efter '-' i item_no og der forsøges igen.
-    Returnerer de matchende rækker (kan være flere).
-    """
     item_no_norm = str(item_no).strip().lower()
     if 'VariantKey_norm' not in variant_df.columns:
         variant_df['VariantKey_norm'] = variant_df['VariantKey'].apply(normalize_variantkey)
@@ -48,10 +39,6 @@ def match_variant_rows(item_no, variant_df):
     return pd.DataFrame()
 
 def lookup_single_value(item_no, variant_df, column_name):
-    """
-    Returnerer første ikke-tomme værdi fra column_name for de rækker,
-    der matcher item_no i variant_df.
-    """
     rows = match_variant_rows(item_no, variant_df)
     if rows.empty:
         return ""
@@ -59,10 +46,6 @@ def lookup_single_value(item_no, variant_df, column_name):
     return "" if pd.isna(val) else str(val).strip()
 
 def lookup_certificate(item_no, variant_df):
-    """
-    Henter alle certifikat-navne (sys_entitytype = 'Certificate')
-    og sammenkæder dem med linjeskift.
-    """
     df_cert = variant_df[variant_df['sys_entitytype'].astype(str).str.lower() == "certificate"]
     rows = match_variant_rows(item_no, df_cert)
     if rows.empty:
@@ -71,10 +54,6 @@ def lookup_certificate(item_no, variant_df):
     return "\n".join(certs)
 
 def lookup_rts(item_no, variant_df):
-    """
-    Henter 'VariantCommercialName' for rækker med VariantIsInStock = 'True'.
-    Fjerner '- All Colors' og sammenkæder med linjeskift.
-    """
     rows = match_variant_rows(item_no, variant_df)
     if rows.empty:
         return ""
@@ -85,11 +64,6 @@ def lookup_rts(item_no, variant_df):
     return "\n".join(names)
 
 def lookup_mto(item_no, variant_df):
-    """
-    Henter 'VariantCommercialName' for rækker med VariantIsInStock != 'True'.
-    Hvis 'VariantCommercialName' er tom, bruges 'VariantName'.
-    Fjerner '- All Colors' og sammenkæder med linjeskift.
-    """
     rows = match_variant_rows(item_no, variant_df)
     if rows.empty:
         return ""
@@ -107,9 +81,6 @@ def lookup_mto(item_no, variant_df):
     return "\n".join(names)
 
 def lookup_packshot(item_no, variant_df):
-    """
-    Returnerer den første URL, hvor 'ResourceDigitalAssetType' = 'Packshot image'.
-    """
     rows = match_variant_rows(item_no, variant_df)
     if rows.empty:
         return ""
@@ -121,10 +92,6 @@ def lookup_packshot(item_no, variant_df):
     return ""
 
 def lookup_lifestyle_images(item_no, variant_df, lifestyle_df):
-    """
-    Finder 'ProductKey' fra variant_df og slår op i lifestyle_df.
-    Returnerer op til 3 URL'er.
-    """
     rows = match_variant_rows(item_no, variant_df)
     if rows.empty:
         return []
@@ -136,10 +103,6 @@ def lookup_lifestyle_images(item_no, variant_df, lifestyle_df):
     return urls[:3]
 
 def lookup_line_drawings(item_no, variant_df, line_df):
-    """
-    Finder 'ProductKey' fra variant_df og slår op i line_df.
-    Returnerer op til 8 URL'er.
-    """
     rows = match_variant_rows(item_no, variant_df)
     if rows.empty:
         return []
@@ -151,15 +114,12 @@ def lookup_line_drawings(item_no, variant_df, line_df):
     return urls[:8]
 
 ##############################################################################
-# 2) Duplikeringsfunktion i samme præsentation
+# 2) Duplikeringsfunktion (brug samme layout som originalen)
 ##############################################################################
 
 def duplicate_slide_in_same_presentation(prs, slide_index=0):
-    """
-    Duplikerer en slide i samme præsentation ved at bruge source slide's eget layout.
-    """
     source_slide = prs.slides[slide_index]
-    slide_layout = source_slide.slide_layout  # Brug samme layout som source slide
+    slide_layout = source_slide.slide_layout
     new_slide = prs.slides.add_slide(slide_layout)
     for shape in source_slide.shapes:
         el = shape.element
@@ -168,26 +128,24 @@ def duplicate_slide_in_same_presentation(prs, slide_index=0):
     return new_slide
 
 ##############################################################################
-# 3) Funktioner til tekst, billeder og hyperlinks
+# 3) Tekstudskiftning (bevarer run-formattering)
 ##############################################################################
 
 def replace_text_placeholders(slide, replacements):
-    """
-    Søger efter fx {{Product name}} i slide's tekst og erstatter med den tilsvarende værdi.
-    """
     for shape in slide.shapes:
         if shape.has_text_frame:
-            original_text = shape.text
-            for key, val in replacements.items():
-                placeholder = f"{{{{{key}}}}}"
-                if placeholder in original_text:
-                    original_text = original_text.replace(placeholder, val)
-            shape.text = original_text
+            for paragraph in shape.text_frame.paragraphs:
+                for run in paragraph.runs:
+                    for key, val in replacements.items():
+                        placeholder = f"{{{{{key}}}}}"
+                        if placeholder in run.text:
+                            run.text = run.text.replace(placeholder, val)
+
+##############################################################################
+# 4) Billedindsættelse med komprimering
+##############################################################################
 
 def insert_image_in_placeholder(slide, placeholder, image_url):
-    """
-    Finder shape med tekst præcis lig "{{placeholder}}" og indsætter billedet med bevaret aspect ratio.
-    """
     if not image_url:
         return
     for shape in slide.shapes:
@@ -203,29 +161,42 @@ def insert_image_in_placeholder(slide, placeholder, image_url):
                         scale = min(max_w / w, max_h / h)
                         new_w = int(w * scale)
                         new_h = int(h * scale)
-                    img_data.seek(0)
-                    slide.shapes.add_picture(img_data, left, top, width=new_w, height=new_h)
+                        # Resize billedet til den nye størrelse
+                        resized_im = im.resize((new_w, new_h), Image.ANTIALIAS)
+                        # Konverter til RGB hvis nødvendigt
+                        if resized_im.mode not in ("RGB", "L"):
+                            resized_im = resized_im.convert("RGB")
+                        # Gem billedet som JPEG med lavere kvalitet for at komprimere
+                        output_io = io.BytesIO()
+                        resized_im.save(output_io, format="JPEG", quality=70)
+                        output_io.seek(0)
+                    slide.shapes.add_picture(output_io, left, top, width=new_w, height=new_h)
                     shape.text = ""
             except Exception as e:
                 st.warning(f"Kunne ikke hente billede fra {image_url}: {e}")
 
+##############################################################################
+# 5) Hyperlinkindsættelse (bevarer templatedesign)
+##############################################################################
+
 def replace_hyperlink_placeholder(slide, placeholder, display_text, url):
-    """
-    Finder en shape med placeholder-teksten og opretter et klikbart hyperlink med display_text.
-    """
     if not url:
         return
     for shape in slide.shapes:
         if shape.has_text_frame and f"{{{{{placeholder}}}}}" in shape.text:
-            shape.text_frame.clear()
-            p = shape.text_frame.paragraphs[0]
-            run = p.add_run()
-            run.text = display_text
-            # Brug python-pptx's indbyggede hyperlink support
-            run.hyperlink.address = url
+            # Vi sletter blot placeholderen i de enkelte runs
+            for paragraph in shape.text_frame.paragraphs:
+                for run in paragraph.runs:
+                    placeholder_tag = f"{{{{{placeholder}}}}}"
+                    if placeholder_tag in run.text:
+                        run.text = run.text.replace(placeholder_tag, "")
+                        run.hyperlink.address = url
+                        # Indsæt display_text hvis der ikke er tekst
+                        if not run.text:
+                            run.text = display_text
 
 ##############################################################################
-# 4) Udfyld slide for ét produkt
+# 6) Udfyld slide for ét produkt
 ##############################################################################
 
 def fill_slide(slide, product_row, variant_df, lifestyle_df, line_df):
@@ -273,7 +244,7 @@ def fill_slide(slide, product_row, variant_df, lifestyle_df, line_df):
         insert_image_in_placeholder(slide, placeholder, url)
 
 ##############################################################################
-# 5) Streamlit-app
+# 7) Streamlit-app
 ##############################################################################
 
 st.title("Automatisk Generering af Præsentationer")
@@ -294,6 +265,9 @@ if uploaded_file:
         st.stop()
     
     user_df = user_df.rename(columns={item_no_col: "Item no", product_name_col: "Product name"})
+    # Konverter 'Item no' til string for at undgå typeproblemer
+    user_df["Item no"] = user_df["Item no"].astype(str)
+    
     st.write("Brugerdata (første 10 rækker vist):")
     st.dataframe(user_df.head(10))
     
