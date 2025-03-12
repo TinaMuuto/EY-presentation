@@ -7,11 +7,11 @@ import requests
 from PIL import Image
 from pptx.opc.constants import RELATIONSHIP_TYPE as RT
 
-# Undgå decompression bomb-advarsler (vær opmærksom på risikoen, hvis du behandler meget store billeder)
+# Undgå advarsler ved store billeder (vær opmærksom på risikoen)
 Image.MAX_IMAGE_PIXELS = None
 
 ##############################################################################
-# 1) Hjælpefunktioner til dataopslag
+# Hjælpefunktioner til dataopslag
 ##############################################################################
 
 def find_column(df, keywords):
@@ -114,12 +114,12 @@ def lookup_line_drawings(item_no, variant_df, line_df):
     return urls[:8]
 
 ##############################################################################
-# 2) Duplikeringsfunktion (brug samme layout som originalen)
+# Funktion til duplikering af slide (brug samme layout som originalen)
 ##############################################################################
 
 def duplicate_slide_in_same_presentation(prs, slide_index=0):
     source_slide = prs.slides[slide_index]
-    slide_layout = source_slide.slide_layout  # Brug source slide's eget layout
+    slide_layout = source_slide.slide_layout
     new_slide = prs.slides.add_slide(slide_layout)
     for shape in source_slide.shapes:
         el = shape.element
@@ -128,82 +128,14 @@ def duplicate_slide_in_same_presentation(prs, slide_index=0):
     return new_slide
 
 ##############################################################################
-# 3) Tekstudskiftning (bevarer run-formattering)
+# Tekstudskiftning – forenklet (erstatter hele teksten)
 ##############################################################################
 
-def replace_text_placeholders(slide, replacements):
-    for shape in slide.shapes:
-        if shape.has_text_frame:
-            for paragraph in shape.text_frame.paragraphs:
-                for run in paragraph.runs:
-                    for key, val in replacements.items():
-                        placeholder = f"{{{{{key}}}}}"
-                        if placeholder in run.text:
-                            run.text = run.text.replace(placeholder, val)
-
-##############################################################################
-# 4) Billedindsættelse med komprimering
-##############################################################################
-
-def insert_image_in_placeholder(slide, placeholder, image_url):
-    if not image_url:
-        return
-    try:
-        resample_filter = Image.Resampling.LANCZOS
-    except AttributeError:
-        resample_filter = Image.ANTIALIAS
-    for shape in slide.shapes:
-        if shape.has_text_frame and shape.text.strip() == f"{{{{{placeholder}}}}}":
-            left, top = shape.left, shape.top
-            max_w, max_h = shape.width, shape.height
-            try:
-                resp = requests.get(image_url, timeout=10)
-                if resp.status_code == 200:
-                    img_data = io.BytesIO(resp.content)
-                    with Image.open(img_data) as im:
-                        w, h = im.size
-                        scale = min(max_w / w, max_h / h)
-                        new_w = int(w * scale)
-                        new_h = int(h * scale)
-                        # Resize billedet med det bestemte resample-filter
-                        resized_im = im.resize((new_w, new_h), resample=resample_filter)
-                        if resized_im.mode not in ("RGB", "L"):
-                            resized_im = resized_im.convert("RGB")
-                        # Gem som JPEG med reduceret kvalitet for at komprimere filstørrelsen
-                        output_io = io.BytesIO()
-                        resized_im.save(output_io, format="JPEG", quality=70)
-                        output_io.seek(0)
-                    slide.shapes.add_picture(output_io, left, top, width=new_w, height=new_h)
-                    shape.text = ""
-            except Exception as e:
-                st.warning(f"Kunne ikke hente billede fra {image_url}: {e}")
-
-##############################################################################
-# 5) Hyperlinkindsættelse (bevarer templatedesign)
-##############################################################################
-
-def replace_hyperlink_placeholder(slide, placeholder, display_text, url):
-    if not url:
-        return
-    for shape in slide.shapes:
-        if shape.has_text_frame and f"{{{{{placeholder}}}}}" in shape.text:
-            for paragraph in shape.text_frame.paragraphs:
-                for run in paragraph.runs:
-                    placeholder_tag = f"{{{{{placeholder}}}}}"
-                    if placeholder_tag in run.text:
-                        run.text = run.text.replace(placeholder_tag, "")
-                        run.hyperlink.address = url
-                        if not run.text:
-                            run.text = display_text
-
-##############################################################################
-# 6) Udfyld slide for ét produkt
-##############################################################################
-
-def fill_slide(slide, product_row, variant_df, lifestyle_df, line_df):
+def fill_text_fields(slide, product_row, variant_df):
     item_no = str(product_row.get("Item no", "")).strip()
     product_name = str(product_row.get("Product name", "")).strip()
     
+    # Opsætning af tekststrenge – her indsættes alt som ren tekst
     replacements = {
         "Product name": f"Product Name: {product_name}",
         "Product code": f"Product Code: {item_no}",
@@ -220,32 +152,90 @@ def fill_slide(slide, product_row, variant_df, lifestyle_df, line_df):
         "Product MTO": f"Product in made to order versions: {lookup_mto(item_no, variant_df)}",
     }
     
-    replace_text_placeholders(slide, replacements)
+    # For hver shape med tekst, udfør en simpel global erstatning
+    for shape in slide.shapes:
+        if shape.has_text_frame:
+            text = shape.text
+            for key, rep in replacements.items():
+                placeholder = f"{{{{{key}}}}}"
+                text = text.replace(placeholder, rep)
+            shape.text = text
+
+    # Hyperlinks indsættes også som ren tekst med link
+    insert_hyperlink(slide, "Product Fact Sheet link", "Link to Product Fact Sheet", lookup_single_value(item_no, variant_df, "ProductFactSheetLink"))
+    insert_hyperlink(slide, "Product configurator link", "Configure product here", lookup_single_value(item_no, variant_df, "ProductLinkToConfigurator"))
+    insert_hyperlink(slide, "Product website link", "See product website", lookup_single_value(item_no, variant_df, "ProductWebsiteLink"))
+
+def insert_hyperlink(slide, placeholder, display_text, url):
+    if not url:
+        return
+    for shape in slide.shapes:
+        if shape.has_text_frame and f"{{{{{placeholder}}}}}" in shape.text:
+            # Erstat placeholder med display_text
+            shape.text = shape.text.replace(f"{{{{{placeholder}}}}}", display_text)
+            # Sæt hyperlink for alle runs, der indeholder display_text
+            for paragraph in shape.text_frame.paragraphs:
+                for run in paragraph.runs:
+                    if display_text in run.text:
+                        run.hyperlink.address = url
+
+##############################################################################
+# Billedindsættelse – skalerer billedet til placeholderens størrelse uden komprimering
+##############################################################################
+
+def fill_image_fields(slide, product_row, variant_df, lifestyle_df, line_df):
+    item_no = str(product_row.get("Item no", "")).strip()
     
-    fact_sheet_url = lookup_single_value(item_no, variant_df, "ProductFactSheetLink")
-    replace_hyperlink_placeholder(slide, "Product Fact Sheet link", "Link to Product Fact Sheet", fact_sheet_url)
-    
-    config_url = lookup_single_value(item_no, variant_df, "ProductLinkToConfigurator")
-    replace_hyperlink_placeholder(slide, "Product configurator link", "Configure product here", config_url)
-    
-    website_url = lookup_single_value(item_no, variant_df, "ProductWebsiteLink")
-    replace_hyperlink_placeholder(slide, "Product website link", "See product website", website_url)
-    
+    # Packshot
     packshot_url = lookup_packshot(item_no, variant_df)
-    insert_image_in_placeholder(slide, "Product Packshot1", packshot_url)
+    insert_image(slide, "Product Packshot1", packshot_url)
     
+    # Lifestyle – indsæt op til 3 billeder
     lifestyle_urls = lookup_lifestyle_images(item_no, variant_df, lifestyle_df)
     for i, url in enumerate(lifestyle_urls):
         placeholder = f"Product Lifestyle{i+1}"
-        insert_image_in_placeholder(slide, placeholder, url)
+        insert_image(slide, placeholder, url)
     
+    # Line drawings – indsæt op til 8 billeder
     line_urls = lookup_line_drawings(item_no, variant_df, line_df)
     for i, url in enumerate(line_urls):
         placeholder = f"Product line drawing{i+1}"
-        insert_image_in_placeholder(slide, placeholder, url)
+        insert_image(slide, placeholder, url)
+
+def insert_image(slide, placeholder, image_url):
+    if not image_url:
+        return
+    try:
+        # Vælg resample-filter (brug LANCZOS hvis muligt)
+        try:
+            resample_filter = Image.Resampling.LANCZOS
+        except AttributeError:
+            resample_filter = Image.ANTIALIAS
+
+        for shape in slide.shapes:
+            if shape.has_text_frame and shape.text.strip() == f"{{{{{placeholder}}}}}":
+                left, top = shape.left, shape.top
+                max_w, max_h = shape.width, shape.height
+                resp = requests.get(image_url, timeout=10)
+                if resp.status_code == 200:
+                    img_data = io.BytesIO(resp.content)
+                    with Image.open(img_data) as im:
+                        w, h = im.size
+                        scale = min(max_w / w, max_h / h)
+                        new_w = int(w * scale)
+                        new_h = int(h * scale)
+                        resized_im = im.resize((new_w, new_h), resample=resample_filter)
+                        # Her undlades komprimering – gemmes fx som PNG
+                        output_io = io.BytesIO()
+                        resized_im.save(output_io, format="PNG")
+                        output_io.seek(0)
+                    slide.shapes.add_picture(output_io, left, top, width=new_w, height=new_h)
+                    shape.text = ""
+    except Exception as e:
+        st.warning(f"Kunne ikke hente billede fra {image_url}: {e}")
 
 ##############################################################################
-# 7) Streamlit-app
+# Hovedprogram – udfyld slides i to passeringer: først tekst/hyperlinks, derefter billeder
 ##############################################################################
 
 st.title("Automatisk Generering af Præsentationer")
@@ -266,11 +256,9 @@ if uploaded_file:
         st.stop()
     
     user_df = user_df.rename(columns={item_no_col: "Item no", product_name_col: "Product name"})
-    # Konverter 'Item no' til string for at undgå typekonverteringsproblemer
-    user_df["Item no"] = user_df["Item no"].apply(str)
+    user_df["Item no"] = user_df["Item no"].apply(str)  # Sikrer, at Item no er string
     
     st.write("Brugerdata (første 10 rækker vist):")
-    # Brug st.write for at undgå Arrow-konverteringsfejl
     st.write(user_df.head(10).astype(str))
     
     try:
@@ -290,13 +278,16 @@ if uploaded_file:
         st.error(f"Fejl ved indlæsning af PowerPoint template: {e}")
         st.stop()
     
+    # For hvert produkt, dupliker slide (første slide bruges til det første produkt)
     for idx, row in user_df.iterrows():
         if idx == 0:
             slide = prs.slides[0]
-            fill_slide(slide, row, variant_df, lifestyle_df, line_df)
         else:
-            new_slide = duplicate_slide_in_same_presentation(prs, slide_index=0)
-            fill_slide(new_slide, row, variant_df, lifestyle_df, line_df)
+            slide = duplicate_slide_in_same_presentation(prs, slide_index=0)
+        # Først indsættes tekst og hyperlinks
+        fill_text_fields(slide, row, variant_df)
+        # Derefter indsættes billeder
+        fill_image_fields(slide, row, variant_df, lifestyle_df, line_df)
     
     ppt_io = io.BytesIO()
     prs.save(ppt_io)
