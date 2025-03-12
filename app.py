@@ -8,11 +8,11 @@ import re
 from PIL import Image
 from pptx.opc.constants import RELATIONSHIP_TYPE as RT
 
-# Undgå advarsler ved meget store billeder
+# Undgå advarsler ved meget store billeder (vær opmærksom på risikoen)
 Image.MAX_IMAGE_PIXELS = None
 
 #############################################
-# 1) Hjælpefunktioner – Dataopslag fra Excel og masterfiler
+# 1) Hjælpefunktioner – Dataopslag
 #############################################
 
 def find_column(df, keywords):
@@ -115,17 +115,31 @@ def lookup_line_drawings(item_no, variant_df, line_df):
     return urls[:8]
 
 #############################################
-# 2) Funktioner til præsentationshåndtering
+# 2) Slide-håndtering – Fjern slides (workaround)
 #############################################
 
-# Kopierer en slide fra template til et mål (final) præsentation
-def copy_slide_from_template(template_slide, target_presentation):
-    # Her bruger vi hele templaten til final_pres, så den bevarer master og layout
+def delete_slide(prs, slide):
+    """
+    Sletter en slide fra præsentationen ved at fjerne dens XML-element fra _sldIdLst.
+    Bemærk: Dette er en workaround, da python-pptx ikke tilbyder en officiel API.
+    """
+    xml_slides = prs.slides._sldIdLst  
+    slide_id = slide.slide_id
+    for sld in xml_slides:
+        if sld.get("id") == str(slide_id):
+            xml_slides.remove(sld)
+            break
+
+#############################################
+# 3) Funktion til at kopiere en slide fra template til final_pres
+#############################################
+
+def copy_slide_from_template(template_slide, target_pres):
     try:
-        blank_layout = target_presentation.slide_layouts[6]
+        blank_layout = target_pres.slide_layouts[6]
     except IndexError:
-        blank_layout = target_presentation.slide_layouts[0]
-    new_slide = target_presentation.slides.add_slide(blank_layout)
+        blank_layout = target_pres.slide_layouts[0]
+    new_slide = target_pres.slides.add_slide(blank_layout)
     for shape in template_slide.shapes:
         el = shape.element
         new_el = copy.deepcopy(el)
@@ -133,7 +147,7 @@ def copy_slide_from_template(template_slide, target_presentation):
     return new_slide
 
 #############################################
-# 3) Tekstudskiftning – indsætter tekst som ren tekst
+# 4) Tekstudskiftning – indsætter tekst som ren tekst
 #############################################
 
 def replace_text_placeholders(slide, replacements):
@@ -146,7 +160,7 @@ def replace_text_placeholders(slide, replacements):
             shape.text = text
 
 #############################################
-# 4) Billedindsættelse – nedskalerer store billeder før indsættelse
+# 5) Billedindsættelse – nedskalerer store billeder
 #############################################
 
 def insert_image(slide, placeholder, image_url):
@@ -165,7 +179,7 @@ def insert_image(slide, placeholder, image_url):
                 if resp.status_code == 200:
                     img_data = io.BytesIO(resp.content)
                     with Image.open(img_data) as im:
-                        # Nedskaler billedet, hvis det er for stort – fx maks 1920x1080
+                        # Nedskaler billedet, hvis det er for stort – maks 1920x1080
                         MAX_SIZE = (1920, 1080)
                         im.thumbnail(MAX_SIZE, resample=resample_filter)
                         orig_w, orig_h = im.size
@@ -183,7 +197,7 @@ def insert_image(slide, placeholder, image_url):
         st.warning(f"Kunne ikke hente billede fra {image_url}: {e}")
 
 #############################################
-# 5) Hyperlinkindsættelse – indsætter hyperlink på en forenklet måde
+# 6) Hyperlinkindsættelse – forenklet metode
 #############################################
 
 def insert_hyperlink(slide, placeholder, display_text, url):
@@ -198,7 +212,7 @@ def insert_hyperlink(slide, placeholder, display_text, url):
                         run.hyperlink.address = url
 
 #############################################
-# 6) Udfyld tekstfelter og hyperlinks – Fase 1
+# 7) Udfyld slide – Fase 1 (Tekst og hyperlinks)
 #############################################
 
 def fill_text_fields(slide, product_row, variant_df):
@@ -223,13 +237,12 @@ def fill_text_fields(slide, product_row, variant_df):
         "Product website link": f"[See product website]({lookup_single_value(item_no, variant_df, 'ProductWebsiteLink')})",
     }
     replace_text_placeholders(slide, replacements)
-    # Indsæt hyperlinks separat
     insert_hyperlink(slide, "Product Fact Sheet link", "Link to Product Fact Sheet", lookup_single_value(item_no, variant_df, "ProductFactSheetLink"))
     insert_hyperlink(slide, "Product configurator link", "Configure product here", lookup_single_value(item_no, variant_df, "ProductLinkToConfigurator"))
     insert_hyperlink(slide, "Product website link", "See product website", lookup_single_value(item_no, variant_df, "ProductWebsiteLink"))
 
 #############################################
-# 7) Udfyld billedfelter – Fase 2
+# 8) Udfyld slide – Fase 2 (Billeder)
 #############################################
 
 def fill_image_fields(slide, product_row, variant_df, lifestyle_df, line_df):
@@ -246,7 +259,7 @@ def fill_image_fields(slide, product_row, variant_df, lifestyle_df, line_df):
         insert_image(slide, placeholder, url)
 
 #############################################
-# 8) Udfyld slide for ét produkt – Samler Fase 1 og 2
+# 9) Fuld udfyldning af slide (fase 1 og 2)
 #############################################
 
 def fill_slide(slide, product_row, variant_df, lifestyle_df, line_df):
@@ -254,7 +267,7 @@ def fill_slide(slide, product_row, variant_df, lifestyle_df, line_df):
     fill_image_fields(slide, product_row, variant_df, lifestyle_df, line_df)
 
 #############################################
-# 9) Two-phase Workflow – Main Streamlit-app
+# 10) Main – Two-phase Workflow
 #############################################
 
 st.title("Automatisk Generering af Præsentationer – To-trins Workflow")
@@ -262,14 +275,14 @@ st.title("Automatisk Generering af Præsentationer – To-trins Workflow")
 st.markdown("""
 ### **Trin 1: Generer Tekstpræsentation**
 1. Upload din Excel-fil med kolonnerne **Item no** og **Product name**.
-2. Appen genererer en PowerPoint-præsentation, baseret på din template (template-generator.pptx), hvor alle tekstfelter og hyperlinks udfyldes.
+2. Appen genererer en PowerPoint-præsentation baseret på din template (template-generator.pptx), hvor alle tekstfelter og hyperlinks udfyldes.
 3. Download den tekstbaserede præsentation.
 
 ---
 
 ### **Trin 2: Tilføj Billeder**
-1. Upload den tekstbaserede præsentation, du netop har genereret.
-2. Appen indsætter billeder (packshot, lifestyle og line drawings) på de tilsvarende slides ved at matche "Item no" med dine eksterne datafiler.
+1. Upload den tekstbaserede præsentation (PPTX).
+2. Appen indsætter billeder (packshot, lifestyle og line drawings) baseret på dine eksterne datafiler.
 3. Download den opdaterede præsentation med billeder.
 """)
 
@@ -304,7 +317,7 @@ if phase == "Generer tekstpræsentation":
             st.error(f"Fejl ved indlæsning af eksterne datafiler: {e}")
             st.stop()
         try:
-            # Brug din template til eksport – altså indlæs den fra filen i git
+            # Indlæs templaten fra git
             template_pres = Presentation("template-generator.pptx")
             if not template_pres.slides:
                 st.error("Din template-præsentation har ingen slides.")
@@ -313,12 +326,11 @@ if phase == "Generer tekstpræsentation":
         except Exception as e:
             st.error(f"Fejl ved indlæsning af PowerPoint template: {e}")
             st.stop()
-        # Opret final_pres ved at bruge template_generator som basis, så eksporten også bruger templaten
+        # Opret en ny præsentation baseret på templaten
         final_pres = Presentation("template-generator.pptx")
-        # Fjern alle eksisterende slides i final_pres
-        while len(final_pres.slides) > 0:
-            r_id = final_pres.slides[0].slide_id
-            final_pres.slides.remove(final_pres.slides.get(slide_id=r_id))
+        # Fjern alle eksisterende slides fra final_pres (brug delete_slide workaround)
+        for slide in list(final_pres.slides):
+            delete_slide(final_pres, slide)
         for idx, row in user_df.iterrows():
             new_slide = copy_slide_from_template(template_slide, final_pres)
             fill_text_fields(new_slide, row, variant_df)
@@ -348,7 +360,6 @@ elif phase == "Tilføj billeder til præsentation":
             st.stop()
         # For hver slide, udtræk Item no og indsæt billeder
         for slide in pres.slides:
-            # Vi udtrækker Item no ud fra teksten i en slide
             item_no = ""
             for shape in slide.shapes:
                 if shape.has_text_frame and "Product Code:" in shape.text:
@@ -359,8 +370,19 @@ elif phase == "Tilføj billeder til præsentation":
             if item_no:
                 fill_image_fields(slide, item_no, variant_df, lifestyle_df, line_df)
             else:
-                st.warning("Kunne ikke udtrække 'Product Code' fra en slide – billeder indsættes ikke for denne slide.")
+                st.warning("Kunne ikke udtrække 'Product Code' fra en slide. Billeder indsættes ikke for denne slide.")
         ppt_io = io.BytesIO()
         pres.save(ppt_io)
         ppt_io.seek(0)
         st.download_button("Download præsentation med billeder", data=ppt_io, file_name="final_presentation.pptx")
+
+#############################################
+# Hjælpefunktion til at slette slides fra en præsentation
+#############################################
+def delete_slide(prs, slide):
+    xml_slides = prs.slides._sldIdLst
+    slide_id = slide.slide_id
+    for sld in xml_slides:
+        if sld.get("id") == str(slide_id):
+            xml_slides.remove(sld)
+            break
