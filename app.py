@@ -1,139 +1,259 @@
 import streamlit as st
 import pandas as pd
-import os
-import io
-import re
 from pptx import Presentation
 from pptx.util import Inches
-from urllib.request import urlopen
-from PIL import Image
+import io
+import re
+import copy
+import requests
 
-def find_column(df, possible_names):
-    """Finder en kolonne uanset variation i navn."""
-    for name in possible_names:
-        matches = [col for col in df.columns if col.lower().strip() == name.lower().strip()]
-        if matches:
-            return matches[0]  # Returner den første matchende kolonne
-    return None  # Returner None, hvis ingen match findes
+# Hjælpefunktion: Find kolonne baseret på nøgleord (ignorér store/små bogstaver)
+def find_column(df, keywords):
+    for col in df.columns:
+        if all(kw in col.lower() for kw in keywords):
+            return col
+    return None
 
-def clean_variant_key(value):
-    """Fjerner '- config' og gør opslag ikke-case sensitive."""
-    if isinstance(value, str):
-        value = value.lower().replace(" - config", "").strip()
-    return value
+# Funktion der returnerer alle rækker i variant data, der matcher et Item no.
+def get_variant_matches(item_no, variant_df):
+    normalized_item = str(item_no).strip().lower()
+    # Fjern " - config" fra VariantKey og normalisér
+    variant_df['VariantKey_norm'] = variant_df['VariantKey'].astype(str).str.replace(" - config", "", regex=False).str.strip().str.lower()
+    matches = variant_df[variant_df['VariantKey_norm'] == normalized_item]
+    if matches.empty:
+        # Hvis intet eksakt match – prøv med delvist match: alt før "-"
+        part = normalized_item.split("-")[0]
+        matches = variant_df[variant_df['VariantKey_norm'].str.startswith(part)]
+    return matches
 
-def match_item_number(df, item_number_col, item_number):
-    """Slår op på Item Nummer og håndterer delvise matches."""
-    if item_number is None or pd.isna(item_number):
-        return None  # Hvis varenummeret mangler, returner None
+# Enkel opslag-funktion for enkelte felter
+def lookup_field(item_no, variant_df, field_name):
+    matches = get_variant_matches(item_no, variant_df)
+    if matches.empty:
+        return ""
+    value = matches.iloc[0].get(field_name, "")
+    if pd.isna(value):
+        return ""
+    return str(value).strip()
+
+def lookup_product_RTS(item_no, variant_df):
+    matches = get_variant_matches(item_no, variant_df)
+    if matches.empty:
+        return ""
+    rts_rows = matches[matches['VariantIsInStock'].astype(str).str.lower() == "true"]
+    names = rts_rows['VariantCommercialName'].dropna().astype(str).replace(to_replace="- All Colors", value="", regex=False)
+    if names.empty:
+        return ""
+    return "\n".join(names.tolist())
+
+def lookup_product_MTO(item_no, variant_df):
+    matches = get_variant_matches(item_no, variant_df)
+    if matches.empty:
+        return ""
+    mto_rows = matches[matches['VariantIsInStock'].astype(str).str.lower() != "true"]
+    results = []
+    for _, row in mto_rows.iterrows():
+        name = row.get('VariantCommercialName')
+        if pd.isna(name) or name == "":
+            name = row.get('VariantName')
+        if pd.notna(name) and name != "":
+            name = str(name).replace("- All Colors", "").strip()
+            results.append(name)
+    return "\n".join(results)
+
+def lookup_certificate(item_no, variant_df):
+    # Filtrer for rækker hvor sys_entitytype er "Certificate"
+    variant_df_cert = variant_df[variant_df['sys_entitytype'].astype(str).str.lower() == "certificate"]
+    matches = get_variant_matches(item_no, variant_df_cert)
+    if matches.empty:
+        return ""
+    certs = matches['CertificateName'].dropna().astype(str)
+    if certs.empty:
+        return ""
+    return "\n".join(certs.tolist())
+
+def lookup_fact_sheet_link(item_no, variant_df):
+    return lookup_field(item_no, variant_df, "ProductFactSheetLink")
+
+def lookup_configurator_link(item_no, variant_df):
+    return lookup_field(item_no, variant_df, "ProductLinkToConfigurator")
+
+def lookup_website_link(item_no, variant_df):
+    return lookup_field(item_no, variant_df, "ProductWebsiteLink")
+
+def lookup_packshot(item_no, variant_df):
+    matches = get_variant_matches(item_no, variant_df)
+    if matches.empty:
+        return ""
+    for _, row in matches.iterrows():
+        if str(row.get("ResourceDigitalAssetType", "")).strip().lower() == "packshot image":
+            url = row.get("ResourceDestinationUrl", "")
+            if pd.notna(url) and url != "":
+                return str(url).strip()
+    return ""
+
+def lookup_lifestyle_images(item_no, variant_df, lifestyle_df):
+    matches = get_variant_matches(item_no, variant_df)
+    if matches.empty:
+        return ["", "", ""]
+    product_key = matches.iloc[0].get("ProductKey", "")
+    if pd.isna(product_key) or product_key == "":
+        return ["", "", ""]
+    rows = lifestyle_df[lifestyle_df['ProductKey'].astype(str).str.lower() == str(product_key).lower()]
+    urls = rows['ResourceDestinationUrl'].dropna().astype(str).tolist()
+    urls = urls[:3] + [""] * (3 - len(urls))
+    return urls
+
+def lookup_line_drawing_images(item_no, variant_df, line_drawing_df):
+    matches = get_variant_matches(item_no, variant_df)
+    if matches.empty:
+        return [""] * 8
+    product_key = matches.iloc[0].get("ProductKey", "")
+    if pd.isna(product_key) or product_key == "":
+        return [""] * 8
+    rows = line_drawing_df[line_drawing_df['ProductKey'].astype(str).str.lower() == str(product_key).lower()]
+    urls = rows['ResourceDestinationUrl'].dropna().astype(str).tolist()
+    urls = urls[:8] + [""] * (8 - len(urls))
+    return urls
+
+# Funktion til at duplikere en slide (kopierer indholdet fra en template slide)
+def duplicate_slide(pres, slide):
+    slide_layout = slide.slide_layout
+    new_slide = pres.slides.add_slide(slide_layout)
+    # Kopiér alle shapes med en deepcopy
+    for shape in slide.shapes:
+        el = shape.element
+        new_el = copy.deepcopy(el)
+        new_slide.shapes._spTree.insert_element_before(new_el, 'p:extLst')
+    return new_slide
+
+# Funktion der erstatter tekst placeholders i en slide
+def replace_placeholders(slide, replacements):
+    for shape in slide.shapes:
+        if shape.has_text_frame:
+            for paragraph in shape.text_frame.paragraphs:
+                for run in paragraph.runs:
+                    for key, value in replacements.items():
+                        placeholder = "{{" + key + "}}"
+                        if placeholder in run.text:
+                            run.text = run.text.replace(placeholder, value)
+
+# Funktion der erstatter en billede-placeholder med et billede hentet fra en URL
+def replace_image_placeholder(slide, placeholder, image_url):
+    for shape in slide.shapes:
+        if shape.has_text_frame and shape.text.strip() == "{{" + placeholder + "}}":
+            left = shape.left
+            top = shape.top
+            width = shape.width
+            height = shape.height
+            try:
+                response = requests.get(image_url)
+                if response.status_code == 200:
+                    image_data = io.BytesIO(response.content)
+                    slide.shapes.add_picture(image_data, left, top, width=width, height=height)
+                    # Fjern placeholder-teksten
+                    shape.text = ""
+            except Exception as e:
+                st.error(f"Fejl ved hentning af billede for {placeholder}: {e}")
+
+# Funktion der processerer ét produkt: udtræk data, erstat felter og indsæt billeder
+def process_product(slide, product, variant_df, lifestyle_df, line_drawing_df):
+    item_no = str(product.get("Item no", "")).strip()
+    product_name = str(product.get("Product name", "")).strip()
     
-    df = df.dropna(subset=[item_number_col])  # Fjern rækker, hvor opslag ikke kan ske
+    # Lav ordbog til tekstfelter med de ønskede formateringer
+    replacements = {
+        "Product name": "Product Name: " + product_name,
+        "Product code": "Product Code: " + item_no,
+        "Product country of origin": "Product Country of Origin: " + lookup_field(item_no, variant_df, "VariantCountryOfOrigin"),
+        "Product height": "Height: " + lookup_field(item_no, variant_df, "VariantHeight"),
+        "Product width": "Width: " + lookup_field(item_no, variant_df, "VariantWidth"),
+        "Product length": "Length: " + lookup_field(item_no, variant_df, "VariantLength"),
+        "Product depth": "Depth: " + lookup_field(item_no, variant_df, "VariantDepth"),
+        "Product seat height": "Seat Height: " + lookup_field(item_no, variant_df, "VariantSeatHeight"),
+        "Product diameter": "Diameter: " + lookup_field(item_no, variant_df, "VariantDiameter"),
+        "CertificateName": "Test & certificates for the product: " + lookup_certificate(item_no, variant_df),
+        "Product Consumption COM": "Consumption information for COM: " + lookup_field(item_no, variant_df, "ProductTextileConsumption_en"),
+        "Product RTS": "Product in stock versions: " + lookup_product_RTS(item_no, variant_df),
+        "Product MTO": "Product in made to order versions: " + lookup_product_MTO(item_no, variant_df),
+        "Product Fact Sheet link": "[Link to Product Fact Sheet](" + lookup_fact_sheet_link(item_no, variant_df) + ")",
+        "Product configurator link": "[Configure product here](" + lookup_configurator_link(item_no, variant_df) + ")",
+        "Product website link": lookup_website_link(item_no, variant_df)
+    }
     
-    match = df[df[item_number_col].str.lower() == str(item_number).lower()]
-    if not match.empty:
-        return match.iloc[0]
+    replace_placeholders(slide, replacements)
     
-    # Hvis ikke eksakt match, prøv at matche første del før "-"
-    partial_key = str(item_number).split('-')[0].strip()
-    match = df[df[item_number_col].str.lower().str.startswith(partial_key.lower())]
-    return match.iloc[0] if not match.empty else None
-
-def insert_image(slide, placeholder_name, image_url):
-    """Indsætter et billede fra en URL i et specifikt pladsholderfelt."""
-    if image_url and isinstance(image_url, str) and image_url.startswith("http"):
-        try:
-            with urlopen(image_url) as img_response:
-                img = Image.open(img_response)
-                img_io = io.BytesIO()
-                img.save(img_io, format='PNG')
-                img_io.seek(0)
-                
-                for shape in slide.shapes:
-                    if shape.has_text_frame and placeholder_name in shape.text:
-                        left, top, width, height = shape.left, shape.top, shape.width, shape.height
-                        slide.shapes.add_picture(img_io, left, top, width, height)
-                        shape.text = ""  # Fjern placeholder-teksten
-        except Exception as e:
-            print(f"Fejl ved indsættelse af billede fra {image_url}: {e}")
-
-def generate_ppt(user_data, variant_data, lifestyle_data, line_drawing_data, template_path):
-    prs = Presentation(template_path)
-    base_slide = prs.slides[0]  # Brug første slide som skabelon
+    # Hent og indsæt billeder
+    packshot_url = lookup_packshot(item_no, variant_df)
+    if packshot_url:
+        replace_image_placeholder(slide, "Product Packshot1", packshot_url)
     
-    # Hardcoded instruktioner - Mapping mellem PowerPoint felter og datakilder
-    instruktioner = [
-        {"ppt_field": "Product Name", "source": "User upload sheet", "headline": "Navn: "},
-        {"ppt_field": "Product Code", "source": "User upload sheet", "headline": "Kode: "},
-        {"ppt_field": "Variant Description", "source": "EY - variant master data", "headline": "Variant: "},
-        {"ppt_field": "Product Lifestyle1", "source": "EY - lifestyle", "headline": ""},
-        {"ppt_field": "Product Line Drawing1", "source": "EY - line drawing", "headline": ""},
-    ]
+    lifestyle_urls = lookup_lifestyle_images(item_no, variant_df, lifestyle_df)
+    for i in range(3):
+        placeholder = f"Product Lifestyle{i+1}"
+        if lifestyle_urls[i]:
+            replace_image_placeholder(slide, placeholder, lifestyle_urls[i])
     
-    # Find korrekt kolonnenavn for varenummer
-    possible_item_cols = ["Item Nummer", "Item Number", "item number", "Item no", "ITEM NO", "Item No"]
-    item_number_col = find_column(user_data, possible_item_cols)
-    if not item_number_col:
-        st.error("Fejl: Kolonnen med varenummer blev ikke fundet. Sørg for, at din fil har en af følgende kolonnenavne: " + ", ".join(possible_item_cols))
-        return None
-    
-    for _, row in user_data.iterrows():
-        item_number = row[item_number_col] if pd.notna(row[item_number_col]) else None
-        matched_row = match_item_number(variant_data, "VariantKey", item_number)
-        
-        slide = prs.slides.add_slide(base_slide.slide_layout)  # Kopi af første slide
-        
-        for instr in instruktioner:
-            ppt_field = instr['ppt_field']
-            field_source = instr['source']
-            headline = instr['headline']
-            
-            value = ""
-            if "User upload sheet" in field_source:
-                value = row.get(ppt_field, "")
-            elif "EY - variant master data" in field_source and matched_row is not None:
-                value = matched_row.get(ppt_field, "")
-            
-            if "lifestyle" in ppt_field.lower() or "line drawing" in ppt_field.lower():
-                insert_image(slide, ppt_field, value)  # Indsæt billede, hvis det er en URL
-            elif value and isinstance(value, str):
-                for shape in slide.shapes:
-                    if shape.has_text_frame and ppt_field in shape.text:
-                        shape.text = f"{headline} {value}" if headline else value
-    
-    ppt_bytes = io.BytesIO()
-    prs.save(ppt_bytes)
-    ppt_bytes.seek(0)
-    return ppt_bytes
+    line_drawing_urls = lookup_line_drawing_images(item_no, variant_df, line_drawing_df)
+    for i in range(8):
+        placeholder = f"Product line drawing{i+1}"
+        if line_drawing_urls[i]:
+            replace_image_placeholder(slide, placeholder, line_drawing_urls[i])
 
-st.title("PowerPoint Generator")
+##############################################
+# Hoveddel af Streamlit-appen
+##############################################
+st.title("Automatisk Generering af Præsentationer")
 
-# Fast PowerPoint skabelon (ingen upload-mulighed)
-template_path = "Appendix 1 - Ancillary Furniture and Accessories Catalogue _ CLE.pptx"
+uploaded_file = st.file_uploader("Upload din Excel-fil med 'Item no' og 'Product name'", type=["xlsx"])
 
-# Fastlagte datafiler i GitHub
-variant_data_path = "EY - variant master data.xlsx"
-lifestyle_data_path = "EY - lifestyle.xlsx"
-line_drawing_data_path = "EY - line drawing.xlsx"
-
-# Upload kun produktlisten
-user_file = st.file_uploader("Upload brugers produktliste (Excel)", type=["xlsx"])
-
-if st.button("Generér PowerPoint") and user_file:
+if uploaded_file is not None:
     try:
-        user_data = pd.read_excel(user_file)
-        variant_data = pd.read_excel(variant_data_path)
-        lifestyle_data = pd.read_excel(lifestyle_data_path)
-        line_drawing_data = pd.read_excel(line_drawing_data_path)
-        
-        ppt_bytes = generate_ppt(user_data, variant_data, lifestyle_data, line_drawing_data, template_path)
-        
-        if ppt_bytes:
-            st.success("PowerPoint genereret!")
-            st.download_button(
-                label="Download PowerPoint",
-                data=ppt_bytes,
-                file_name="Generated_Presentation.pptx",
-                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            )
+        user_df = pd.read_excel(uploaded_file)
     except Exception as e:
-        st.error(f"En fejl opstod: {str(e)}. Tjek din uploadede fil og prøv igen.")
+        st.error(f"Fejl ved indlæsning af brugerfil: {e}")
+    
+    # Find de relevante kolonner (prøver at finde varianter af kolonnenavne)
+    item_no_col = find_column(user_df, ["item", "no"])
+    product_name_col = find_column(user_df, ["product", "name"])
+    if item_no_col is None or product_name_col is None:
+        st.error("Kunne ikke finde de nødvendige kolonner ('Item no' og 'Product name') i din fil.")
+    else:
+        # Omdøb kolonnerne for at standardisere navne
+        user_df = user_df.rename(columns={item_no_col: "Item no", product_name_col: "Product name"})
+        st.write("Brugerdata:")
+        st.dataframe(user_df)
+        
+        # Indlæs de eksterne datafiler – her forudsættes det, at de ligger lokalt
+        try:
+            variant_df = pd.read_excel("EY - variant master data.xlsx")
+            lifestyle_df = pd.read_excel("EY - lifestyle.xlsx")
+            line_drawing_df = pd.read_excel("EY - line drawing.xlsx")
+        except Exception as e:
+            st.error(f"Fejl ved indlæsning af eksterne datafiler: {e}")
+        
+        # Indlæs PowerPoint-templaten
+        try:
+            prs = Presentation("template-generator.pptx")
+        except Exception as e:
+            st.error(f"Fejl ved indlæsning af PowerPoint template: {e}")
+        
+        # Antag, at templaten har én slide, som skal duplikeres for hvert produkt.
+        template_slide = prs.slides[0]
+        
+        # Processér det første produkt på den eksisterende slide
+        if len(user_df) > 0:
+            product = user_df.iloc[0]
+            process_product(template_slide, product, variant_df, lifestyle_df, line_drawing_df)
+        
+        # For de resterende produkter: duplikér templaten og processér
+        for idx in range(1, len(user_df)):
+            product = user_df.iloc[idx]
+            new_slide = duplicate_slide(prs, template_slide)
+            process_product(new_slide, product, variant_df, lifestyle_df, line_drawing_df)
+        
+        # Giv brugeren mulighed for at downloade den genererede præsentation
+        ppt_io = io.BytesIO()
+        prs.save(ppt_io)
+        ppt_io.seek(0)
+        st.download_button("Download genereret præsentation", data=ppt_io, file_name="generated_presentation.pptx")
