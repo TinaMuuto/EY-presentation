@@ -6,6 +6,14 @@ import re
 from pptx import Presentation
 from pptx.util import Inches
 
+def find_column(df, possible_names):
+    """Finder en kolonne uanset variation i navn."""
+    for name in possible_names:
+        matches = [col for col in df.columns if col.lower().strip() == name.lower().strip()]
+        if matches:
+            return matches[0]  # Returner den første matchende kolonne
+    return None  # Returner None, hvis ingen match findes
+
 def clean_variant_key(value):
     """Fjerner '- config' og gør opslag ikke-case sensitive."""
     if isinstance(value, str):
@@ -26,8 +34,14 @@ def match_item_number(df, item_number):
 def generate_ppt(user_data, variant_data, lifestyle_data, line_drawing_data, instruktioner, template_path):
     prs = Presentation(template_path)
     
+    # Find korrekt kolonnenavn for varenummer
+    item_number_col = find_column(user_data, ["Item Nummer", "Item Number", "item number", "Item no", "ITEM NO", "Item No"])
+    if not item_number_col:
+        st.error("Fejl: Kolonnen med varenummer (Item Nummer) blev ikke fundet. Tjek at din fil har en af de understøttede kolonnenavne.")
+        return None
+    
     for _, row in user_data.iterrows():
-        item_number = row['Item Nummer']
+        item_number = row[item_number_col]
         matched_row = match_item_number(variant_data, item_number)
         
         slide = prs.slides.add_slide(prs.slide_layouts[5])
@@ -53,7 +67,7 @@ def generate_ppt(user_data, variant_data, lifestyle_data, line_drawing_data, ins
     ppt_bytes.seek(0)
     return ppt_bytes
 
-st.title("EY PowerPoint Generator")
+st.title("PowerPoint Generator 📊")
 
 # Fast PowerPoint skabelon (ingen upload-mulighed)
 template_path = "Appendix 1 - Ancillary Furniture and Accessories Catalogue _ CLE.pptx"
@@ -68,18 +82,22 @@ instruktioner_path = "instruktioner.xlsx"
 user_file = st.file_uploader("Upload brugers produktliste (Excel)", type=["xlsx"])
 
 if st.button("Generér PowerPoint") and user_file:
-    user_data = pd.read_excel(user_file)
-    variant_data = pd.read_excel(variant_data_path)
-    lifestyle_data = pd.read_excel(lifestyle_data_path)
-    line_drawing_data = pd.read_excel(line_drawing_data_path)
-    instruktioner = pd.read_excel(instruktioner_path)
-    
-    ppt_bytes = generate_ppt(user_data, variant_data, lifestyle_data, line_drawing_data, instruktioner, template_path)
-    
-    st.success("PowerPoint genereret!")
-    st.download_button(
-        label="Download PowerPoint",
-        data=ppt_bytes,
-        file_name="Generated_Presentation.pptx",
-        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    )
+    try:
+        user_data = pd.read_excel(user_file)
+        variant_data = pd.read_excel(variant_data_path)
+        lifestyle_data = pd.read_excel(lifestyle_data_path)
+        line_drawing_data = pd.read_excel(line_drawing_data_path)
+        instruktioner = pd.read_excel(instruktioner_path)
+        
+        ppt_bytes = generate_ppt(user_data, variant_data, lifestyle_data, line_drawing_data, instruktioner, template_path)
+        
+        if ppt_bytes:
+            st.success("PowerPoint genereret!")
+            st.download_button(
+                label="Download PowerPoint",
+                data=ppt_bytes,
+                file_name="Generated_Presentation.pptx",
+                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            )
+    except Exception as e:
+        st.error(f"En fejl opstod: {str(e)}. Tjek din uploadede fil og prøv igen.")
