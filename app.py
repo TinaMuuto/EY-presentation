@@ -120,13 +120,10 @@ def lookup_line_drawings(item_no, variant_df, line_df):
 #############################################
 
 def delete_all_slides(prs):
-    # Sletter alle slides i præsentationen vha. delete_slide
-    # Vi opretter en kopi af slide-listen for at undgå iteration over en modificeret liste.
     for slide in list(prs.slides):
         delete_slide(prs, slide)
 
 def delete_slide(prs, slide):
-    # Fjern slide ved at fjerne dens XML-element fra _sldIdLst
     xml_slides = prs.slides._sldIdLst  
     slide_id = slide.slide_id
     for sld in xml_slides:
@@ -135,19 +132,10 @@ def delete_slide(prs, slide):
             break
 
 #############################################
-# 3) Kopier slide fra template – Bevar layout og grafik
+# 3) Kopier slide fra template – Bevar layout, baggrund og grafik
 #############################################
 
-def duplicate_slide_full(prs, slide_index=0):
-    # Lav en dyb kopi af hele slide-XML’en for at bevare layout, baggrund og grafik.
-    source_slide = prs.slides[slide_index]
-    new_slide_element = copy.deepcopy(source_slide._element)
-    prs.slides._sldIdLst.append(new_slide_element)
-    return prs.slides[-1]
-
 def copy_slide_from_template(template_slide, target_pres):
-    # Hvis du foretrækker at bruge copy_slide_from_template i stedet for duplicate_slide_full,
-    # kan du vælge den metode, der bevarer layout bedst.
     try:
         blank_layout = target_pres.slide_layouts[6]
     except IndexError:
@@ -160,7 +148,7 @@ def copy_slide_from_template(template_slide, target_pres):
     return new_slide
 
 #############################################
-# 4) Tekstudskiftning – Erstat placeholder-tekst på run-niveau og bevar formatering
+# 4) Tekstudskiftning – Udskift placeholder-tekst på run-niveau og bevar formatering
 #############################################
 
 def replace_text_placeholders(slide, replacements):
@@ -280,7 +268,6 @@ def fill_text_fields(slide, product_row, variant_df):
 #############################################
 
 def fill_image_fields(slide, product_row, variant_df, lifestyle_df, line_df):
-    # Hvis product_row ikke er en dict, antages det at det er en streng (item_no)
     if isinstance(product_row, dict):
         item_no = str(product_row.get("Item no", "")).strip()
     else:
@@ -297,7 +284,7 @@ def fill_image_fields(slide, product_row, variant_df, lifestyle_df, line_df):
         insert_image(slide, placeholder, url)
 
 #############################################
-# 9) Udfyld slide for ét produkt – Samler fase 1 og 2 samt bevarer template-layout
+# 9) Udfyld slide for ét produkt – Samler fase 1 og 2
 #############################################
 
 def fill_slide(slide, product_row, variant_df, lifestyle_df, line_df):
@@ -378,7 +365,7 @@ if phase == "Generer tekstpræsentation":
         final_pres = Presentation("template-generator.pptx")
         delete_all_slides(final_pres)
         for idx, row in user_df.iterrows():
-            new_slide = duplicate_slide_full(final_pres, slide_index=0)
+            new_slide = copy_slide_from_template(template_slide, final_pres)
             fill_text_fields(new_slide, row, variant_df)
         ppt_io = io.BytesIO()
         final_pres.save(ppt_io)
