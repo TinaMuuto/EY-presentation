@@ -7,9 +7,21 @@ import requests
 import re
 from PIL import Image
 from pptx.dml.color import RGBColor
+import time
 
 # Undgå advarsler ved store billeder
 Image.MAX_IMAGE_PIXELS = None
+
+# Progress bar
+steps = ["Upload fil", "Behandler data", "Genererer slides", "Færdig - Klar til download"]
+progress = st.progress(0)
+status_text = st.empty()
+
+def update_progress(step):
+    """Opdaterer progress bar og status-tekst"""
+    progress.progress((step + 1) / len(steps))
+    status_text.text(steps[step])
+    time.sleep(1)
 
 #############################################
 # Hjælpefunktioner – Dataopslag
@@ -20,7 +32,19 @@ def normalize_variantkey(s):
 
 def match_variant_rows(item_no, mapping_df):
     item_no_norm = normalize_variantkey(item_no)
-    mapping_df['VariantKey_norm'] = mapping_df['Product code'].apply(normalize_variantkey)
+    mapping_df.columns = mapping_df.columns.str.strip().str.replace(r"[{}]", "", regex=True)
+    
+    # Log kolonnenavne for fejlfinding
+    st.write("Kolonner i mapping_df:", mapping_df.columns.tolist())
+    
+    if "Product code" in mapping_df.columns:
+        mapping_df['VariantKey_norm'] = mapping_df['Product code'].apply(normalize_variantkey)
+    elif "{{Product code}}" in mapping_df.columns:
+        mapping_df['VariantKey_norm'] = mapping_df['{{Product code}}'].apply(normalize_variantkey)
+    else:
+        st.error("Fejl: 'Product code' ikke fundet i mapping-filen. Kontroller filens format.")
+        st.stop()
+    
     matches = mapping_df[mapping_df['VariantKey_norm'] == item_no_norm]
     if not matches.empty:
         return matches
@@ -34,9 +58,9 @@ def match_variant_rows(item_no, mapping_df):
 def lookup_single_value(item_no, mapping_df, column_name):
     rows = match_variant_rows(item_no, mapping_df)
     if rows.empty:
-        return ""
-    val = rows.iloc[0].get(column_name, "")
-    return "" if pd.isna(val) else str(val).strip()
+        return "N/A"
+    val = rows.iloc[0].get(column_name, "N/A")
+    return "N/A" if pd.isna(val) else str(val).strip()
 
 #############################################
 # Slide-håndtering – Bevar layout og design
@@ -121,9 +145,11 @@ def fill_slide(slide, product_row, mapping_df):
 st.title("PowerPoint Generator")
 user_file = st.file_uploader("Upload din Excel-fil", type=["xlsx"])
 if user_file:
+    update_progress(1)
     user_df = pd.read_excel(user_file)
     mapping_df = pd.read_excel("mapping-file.xlsx")
     prs = pptx.Presentation("template-generator.pptx")
+    update_progress(2)
     
     if not prs.slides:
         st.error("Template-præsentationen har ingen slides.")
@@ -137,7 +163,9 @@ if user_file:
             slide = copy_slide_from_template(template_slide, prs)
         fill_slide(slide, row, mapping_df)
     
+    update_progress(3)
     ppt_io = io.BytesIO()
     prs.save(ppt_io)
     ppt_io.seek(0)
+    st.success("Præsentationen er færdig!")
     st.download_button("Download præsentation", data=ppt_io, file_name="presentation.pptx")
