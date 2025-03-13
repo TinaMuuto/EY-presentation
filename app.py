@@ -31,10 +31,15 @@ def get_mapping_data(mapping_df, item_no):
         match = mapping_df[mapping_df['{{Product code}}'].astype(str) == stripped_item_no]
     return match.iloc[0] if not match.empty else None
 
-# Funktion til at indsætte tekst i slide
-def insert_text(slide, placeholder, label, value):
-    if placeholder and pd.notna(value):
-        placeholder.text = f"{label}\n{value}"
+# Funktion til at indsætte tekst i en tabelcelle
+def insert_text_in_table(slide, field, value):
+    for shape in slide.shapes:
+        if shape.has_table:
+            table = shape.table
+            for row in table.rows:
+                for cell in row.cells:
+                    if field in cell.text:
+                        cell.text = cell.text.replace(field, value)
 
 # Funktion til at håndtere billeder
 def insert_image(slide, placeholder, image_url):
@@ -59,18 +64,30 @@ def prepare_ppt_template(template_file, num_slides):
 
 # Funktion til at indsætte data i slides
 def populate_slide(slide, mapping_data):
+    # Indsæt tekstfelter i tabellen
     text_fields = {
         '{{Product name}}': "Product Name:",
         '{{Product code}}': "Product Code:",
         '{{Product country of origin}}': "Country of origin:",
+        '{{Product height}}': "Height:",
+        '{{Product width}}': "Width:",
+        '{{Product length}}': "Length:",
+        '{{Product depth}}': "Depth:",
+        '{{Product seat height}}': "Seat Height:",
+        '{{Product  diameter}}': "Diameter:",
+        '{{CertificateName}}': "Test & certificates for the product:",
+        '{{Product Consumption COM}}': "Consumption information for COM:"
     }
     for field, label in text_fields.items():
         value = mapping_data.get(field, "N/A")
-        insert_text(slide, slide.shapes[0].text_frame, label, value)
+        insert_text_in_table(slide, field, value)
     
+    # Indsæt billeder kun hvis de findes
     image_fields = ['{{Product Packshot1}}', '{{Product Lifestyle1}}', '{{Product Lifestyle2}}', '{{Product Lifestyle3}}', '{{Product Lifestyle4}}']
     for field in image_fields:
-        insert_image(slide, slide.shapes[0], mapping_data.get(field, None))
+        for shape in slide.shapes:
+            if shape.has_text_frame and field in shape.text_frame.text:
+                insert_image(slide, shape, mapping_data.get(field, None))
 
 # Funktion til at generere PowerPoint
 def generate_presentation(user_file, mapping_file, stock_file, template_file):
@@ -108,3 +125,4 @@ if user_file:
                        data=open(ppt_file, "rb").read(), 
                        file_name="generated_presentation.pptx",
                        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation")
+
