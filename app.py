@@ -64,7 +64,7 @@ def prepare_ppt_template(template_file, num_slides):
     return prs
 
 # Funktion til at indsætte data i slides
-def populate_slide(slide, mapping_data):
+def populate_slide(slide, mapping_data, index):
     text_fields = {
         '{{Product name}}': "Product Name:",
         '{{Product code}}': "Product Code:",
@@ -86,9 +86,11 @@ def populate_slide(slide, mapping_data):
     for field in image_fields:
         for shape in slide.shapes:
             if shape.has_text_frame and field in shape.text_frame.text:
-                image_url = mapping_data.get(field, None)
+                image_url = mapping_data.get(field, "").strip()
                 if image_url:
                     insert_image(slide, shape, image_url)
+                else:
+                    st.warning(f"Billede mangler for {field} på slide {index+1}")
 
 # Funktion til at generere PowerPoint
 def generate_presentation(user_file, mapping_file, stock_file, template_file):
@@ -96,6 +98,9 @@ def generate_presentation(user_file, mapping_file, stock_file, template_file):
     user_df = pd.read_excel(user_file)
     mapping_df = pd.read_excel(mapping_file, sheet_name=0)
     stock_df = pd.read_excel(stock_file, sheet_name=0)
+    
+    # Rens kolonnenavne
+    mapping_df.columns = mapping_df.columns.str.strip()
     
     prs = prepare_ppt_template(template_file, len(user_df) - 1)
     update_progress(2)
@@ -111,7 +116,7 @@ def generate_presentation(user_file, mapping_file, stock_file, template_file):
             mapping_data = get_mapping_data(mapping_df, item_no_stripped)
         
         if mapping_data is not None:
-            populate_slide(slide, mapping_data)
+            populate_slide(slide, mapping_data, index)
         else:
             st.error(f"Ingen data fundet for Item no: {item_no}")
     
