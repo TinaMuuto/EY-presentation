@@ -22,18 +22,19 @@ def get_mapping_data(mapping_df, item_no):
 
 # Funktion til at indsætte tekst i slide
 def insert_text(slide, placeholder, label, value):
-    if placeholder:
+    if placeholder and pd.notna(value):
         placeholder.text = f"{label}\n{value}"
 
 # Funktion til at håndtere billeder
 def insert_image(slide, placeholder, image_url):
     try:
-        response = requests.get(image_url)
-        img = Image.open(BytesIO(response.content))
-        img = img.convert("RGB")  # Konverter fra TIFF hvis nødvendigt
-        temp_img = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
-        img.save(temp_img.name, format="JPEG")
-        placeholder.insert_picture(temp_img.name)
+        if isinstance(image_url, str) and image_url.startswith("http"):
+            response = requests.get(image_url)
+            img = Image.open(BytesIO(response.content))
+            img = img.convert("RGB")  # Konverter fra TIFF hvis nødvendigt
+            temp_img = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+            img.save(temp_img.name, format="JPEG")
+            placeholder.insert_picture(temp_img.name)
     except:
         print(f"Kunne ikke hente billede: {image_url}")
 
@@ -51,19 +52,35 @@ def generate_ppt(user_file, mapping_file, stock_file, template_file):
         product_name = row['Product name']
         mapping_data = get_mapping_data(mapping_df, item_no)
         
-        if mapping_data is not None:
-            slide = prs.slides.add_slide(slide_layout)
-            text_placeholders = {shape.text_frame.text: shape.text_frame for shape in slide.shapes if shape.has_text_frame}
-            
-            # Indsæt tekstfelter
-            insert_text(slide, text_placeholders.get('{{Product name}}'), "Product Name:", mapping_data['{{Product name}}'])
-            insert_text(slide, text_placeholders.get('{{Product code}}'), "Product Code:", mapping_data['{{Product code}}'])
-            insert_text(slide, text_placeholders.get('{{Product country of origin}}'), "Country of origin:", mapping_data['{{Product country of origin}}'])
-            
-            # Indsæt billeder
-            image_fields = ['{{Product Packshot}}', '{{Product Lifestyle1}}', '{{Product Lifestyle2}}', '{{Product Lifestyle3}}', '{{Product Lifestyle4}}']
-            for field in image_fields:
-                insert_image(slide, text_placeholders.get(field), mapping_data[field])
+        if mapping_data is None:
+            st.warning(f"Kunne ikke finde match for Item no: {item_no}")
+            continue  # Spring denne iteration over
+        
+        slide = prs.slides.add_slide(slide_layout)
+        text_placeholders = {shape.text_frame.text: shape.text_frame for shape in slide.shapes if shape.has_text_frame}
+
+        # Indsæt tekstfelter
+        text_fields = {
+            '{{Product name}}': "Product Name:",
+            '{{Product code}}': "Product Code:",
+            '{{Product country of origin}}': "Country of origin:",
+            '{{Product height}}': "Height:",
+            '{{Product width}}': "Width:",
+            '{{Product length}}': "Length:",
+            '{{Product depth}}': "Depth:",
+            '{{Product seat height}}': "Seat Height:",
+            '{{Product  diameter}}': "Diameter:",
+            '{{CertificateName}}': "Test & certificates for the product:",
+            '{{Product Consumption COM}}': "Consumption information for COM:"
+        }
+        
+        for field, label in text_fields.items():
+            insert_text(slide, text_placeholders.get(field), label, mapping_data.get(field, "N/A"))
+        
+        # Indsæt billeder kun hvis de findes
+        image_fields = ['{{Product Packshot1}}', '{{Product Lifestyle1}}', '{{Product Lifestyle2}}', '{{Product Lifestyle3}}', '{{Product Lifestyle4}}']
+        for field in image_fields:
+            insert_image(slide, text_placeholders.get(field), mapping_data.get(field, None))
     
     output_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pptx").name
     prs.save(output_file)
