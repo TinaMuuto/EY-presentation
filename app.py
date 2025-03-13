@@ -86,7 +86,9 @@ def populate_slide(slide, mapping_data):
     for field in image_fields:
         for shape in slide.shapes:
             if shape.has_text_frame and field in shape.text_frame.text:
-                insert_image(slide, shape, mapping_data.get(field, None))
+                image_url = mapping_data.get(field, None)
+                if image_url:
+                    insert_image(slide, shape, image_url)
 
 # Funktion til at generere PowerPoint
 def generate_presentation(user_file, mapping_file, stock_file, template_file):
@@ -102,8 +104,16 @@ def generate_presentation(user_file, mapping_file, stock_file, template_file):
         item_no = str(row['Item no'])
         slide = prs.slides[index]
         mapping_data = get_mapping_data(mapping_df, item_no)
+        
+        if mapping_data is None:
+            st.warning(f"Ingen match for Item no: {item_no}, prøver med trimmet version...")
+            item_no_stripped = item_no.split("-")[0] if "-" in item_no else item_no
+            mapping_data = get_mapping_data(mapping_df, item_no_stripped)
+        
         if mapping_data is not None:
             populate_slide(slide, mapping_data)
+        else:
+            st.error(f"Ingen data fundet for Item no: {item_no}")
     
     output_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pptx").name
     prs.save(output_file)
