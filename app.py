@@ -33,6 +33,7 @@ def get_mapping_data(mapping_df, item_no):
 
 # Funktion til at indsætte tekst i en tabelcelle
 def insert_text_in_table(slide, field, value):
+    value = str(value) if pd.notna(value) else "N/A"  # Konverter til string og håndter NaN
     for shape in slide.shapes:
         if shape.has_table:
             table = shape.table
@@ -64,7 +65,6 @@ def prepare_ppt_template(template_file, num_slides):
 
 # Funktion til at indsætte data i slides
 def populate_slide(slide, mapping_data):
-    # Indsæt tekstfelter i tabellen
     text_fields = {
         '{{Product name}}': "Product Name:",
         '{{Product code}}': "Product Code:",
@@ -80,9 +80,8 @@ def populate_slide(slide, mapping_data):
     }
     for field, label in text_fields.items():
         value = mapping_data.get(field, "N/A")
-        insert_text_in_table(slide, field, value)
+        insert_text_in_table(slide, field, str(value))
     
-    # Indsæt billeder kun hvis de findes
     image_fields = ['{{Product Packshot1}}', '{{Product Lifestyle1}}', '{{Product Lifestyle2}}', '{{Product Lifestyle3}}', '{{Product Lifestyle4}}']
     for field in image_fields:
         for shape in slide.shapes:
@@ -125,4 +124,3 @@ if user_file:
                        data=open(ppt_file, "rb").read(), 
                        file_name="generated_presentation.pptx",
                        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation")
-
