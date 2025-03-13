@@ -31,18 +31,25 @@ def get_mapping_data(mapping_df, item_no):
         match = mapping_df[mapping_df['{{Product code}}'].astype(str) == stripped_item_no]
     return match.iloc[0] if not match.empty else None
 
-# Funktion til at indsætte tekst i en tabelcelle
-def insert_text_in_table(slide, field, value):
-    value = str(value) if pd.notna(value) else "N/A"  # Konverter til string og håndter NaN
-    for shape in slide.shapes:
-        if shape.has_table:
-            table = shape.table
-            for row in table.rows:
-                for cell in row.cells:
-                    if field in cell.text:
-                        cell.text = cell.text.replace(field, value)
+# Funktion til at kopiere en slide
+def duplicate_slide(prs, slide_index):
+    source_slide = prs.slides[slide_index]
+    slide_layout = source_slide.slide_layout
+    new_slide = prs.slides.add_slide(slide_layout)
+    for shape in source_slide.shapes:
+        if shape.has_text_frame:
+            new_shape = new_slide.shapes.add_textbox(shape.left, shape.top, shape.width, shape.height)
+            new_shape.text_frame.text = shape.text_frame.text
+    return new_slide
 
-# Funktion til at håndtere billeder
+# Funktion til at indsætte tekst i tekstbokse
+def insert_text(slide, field, value):
+    value = str(value) if pd.notna(value) else "N/A"
+    for shape in slide.shapes:
+        if shape.has_text_frame and field in shape.text_frame.text:
+            shape.text_frame.text = shape.text_frame.text.replace(field, value)
+
+# Funktion til at indsætte billeder
 def insert_image(slide, placeholder, image_url):
     try:
         if isinstance(image_url, str) and image_url.startswith("http"):
@@ -55,59 +62,20 @@ def insert_image(slide, placeholder, image_url):
     except:
         print(f"Kunne ikke hente billede: {image_url}")
 
-# Funktion til at forberede PowerPoint-skabelonen
-def prepare_ppt_template(template_file, num_slides):
-    prs = pptx.Presentation(template_file)
-    slide_layout = prs.slide_layouts[0]
-    for _ in range(num_slides):
-        prs.slides.add_slide(slide_layout)
-    return prs
-
-# Funktion til at indsætte data i slides
-def populate_slide(slide, mapping_data, index):
-    text_fields = {
-        '{{Product name}}': "Product Name:",
-        '{{Product code}}': "Product Code:",
-        '{{Product country of origin}}': "Country of origin:",
-        '{{Product height}}': "Height:",
-        '{{Product width}}': "Width:",
-        '{{Product length}}': "Length:",
-        '{{Product depth}}': "Depth:",
-        '{{Product seat height}}': "Seat Height:",
-        '{{Product  diameter}}': "Diameter:",
-        '{{CertificateName}}': "Test & certificates for the product:",
-        '{{Product Consumption COM}}': "Consumption information for COM:"
-    }
-    for field, label in text_fields.items():
-        value = mapping_data.get(field, "N/A")
-        insert_text_in_table(slide, field, str(value))
-    
-    image_fields = ['{{Product Packshot1}}', '{{Product Lifestyle1}}', '{{Product Lifestyle2}}', '{{Product Lifestyle3}}', '{{Product Lifestyle4}}']
-    for field in image_fields:
-        for shape in slide.shapes:
-            if shape.has_text_frame and field in shape.text_frame.text:
-                image_url = mapping_data.get(field, "").strip()
-                if image_url:
-                    insert_image(slide, shape, image_url)
-                else:
-                    st.warning(f"Billede mangler for {field} på slide {index+1}")
-
 # Funktion til at generere PowerPoint
 def generate_presentation(user_file, mapping_file, stock_file, template_file):
     update_progress(1)
     user_df = pd.read_excel(user_file)
     mapping_df = pd.read_excel(mapping_file, sheet_name=0)
     stock_df = pd.read_excel(stock_file, sheet_name=0)
-    
-    # Rens kolonnenavne
     mapping_df.columns = mapping_df.columns.str.strip()
     
-    prs = prepare_ppt_template(template_file, len(user_df) - 1)
+    prs = pptx.Presentation(template_file)
     update_progress(2)
     
     for index, row in user_df.iterrows():
         item_no = str(row['Item no'])
-        slide = prs.slides[index]
+        new_slide = duplicate_slide(prs, 0)
         mapping_data = get_mapping_data(mapping_df, item_no)
         
         if mapping_data is None:
@@ -116,7 +84,16 @@ def generate_presentation(user_file, mapping_file, stock_file, template_file):
             mapping_data = get_mapping_data(mapping_df, item_no_stripped)
         
         if mapping_data is not None:
-            populate_slide(slide, mapping_data, index)
+            for field in ['{{Product name}}', '{{Product code}}', '{{Product country of origin}}']:
+                value = mapping_data.get(field, "N/A")
+                insert_text(new_slide, field, value)
+            
+            for field in ['{{Product Packshot1}}', '{{Product Lifestyle1}}', '{{Product Lifestyle2}}', '{{Product Lifestyle3}}', '{{Product Lifestyle4}}']:
+                image_url = mapping_data.get(field, "").strip()
+                if image_url:
+                    insert_image(new_slide, new_slide.shapes[0], image_url)
+                else:
+                    st.warning(f"Billede mangler for {field} på slide {index+1}")
         else:
             st.error(f"Ingen data fundet for Item no: {item_no}")
     
