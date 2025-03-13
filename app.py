@@ -116,21 +116,51 @@ def lookup_line_drawings(item_no, variant_df, line_df):
     return urls[:8]
 
 #############################################
-# 2) Slide-håndtering – Dupliker slide med hele XML’en
+# 2) Slide-håndtering – Slet alle slides
+#############################################
+
+def delete_all_slides(prs):
+    # Sletter alle slides i præsentationen vha. delete_slide
+    # Vi opretter en kopi af slide-listen for at undgå iteration over en modificeret liste.
+    for slide in list(prs.slides):
+        delete_slide(prs, slide)
+
+def delete_slide(prs, slide):
+    # Fjern slide ved at fjerne dens XML-element fra _sldIdLst
+    xml_slides = prs.slides._sldIdLst  
+    slide_id = slide.slide_id
+    for sld in xml_slides:
+        if sld.get("id") == str(slide_id):
+            xml_slides.remove(sld)
+            break
+
+#############################################
+# 3) Kopier slide fra template – Bevar layout og grafik
 #############################################
 
 def duplicate_slide_full(prs, slide_index=0):
-    """
-    Duplikerer en slide ved at lave en dyb kopi af hele slide-XML’en.
-    Dette bør bevare baggrund, master-elementer og grafiske elementer.
-    """
+    # Lav en dyb kopi af hele slide-XML’en for at bevare layout, baggrund og grafik.
     source_slide = prs.slides[slide_index]
     new_slide_element = copy.deepcopy(source_slide._element)
     prs.slides._sldIdLst.append(new_slide_element)
     return prs.slides[-1]
 
+def copy_slide_from_template(template_slide, target_pres):
+    # Hvis du foretrækker at bruge copy_slide_from_template i stedet for duplicate_slide_full,
+    # kan du vælge den metode, der bevarer layout bedst.
+    try:
+        blank_layout = target_pres.slide_layouts[6]
+    except IndexError:
+        blank_layout = target_pres.slide_layouts[0]
+    new_slide = target_pres.slides.add_slide(blank_layout)
+    for shape in template_slide.shapes:
+        el = shape.element
+        new_el = copy.deepcopy(el)
+        new_slide.shapes._spTree.insert_element_before(new_el, 'p:extLst')
+    return new_slide
+
 #############################################
-# 3) Tekstudskiftning – Erstat placeholder-tekst på run-niveau og bevar formatering
+# 4) Tekstudskiftning – Erstat placeholder-tekst på run-niveau og bevar formatering
 #############################################
 
 def replace_text_placeholders(slide, replacements):
@@ -166,7 +196,7 @@ def replace_text_placeholders(slide, replacements):
                             new_run.font.color.rgb = font_props["color"]
 
 #############################################
-# 4) Billedindsættelse – Nedskaler store billeder (maks 1920x1080)
+# 5) Billedindsættelse – Nedskaler store billeder (maks 1920x1080)
 #############################################
 
 def insert_image(slide, placeholder, image_url):
@@ -201,7 +231,7 @@ def insert_image(slide, placeholder, image_url):
         st.warning(f"Kunne ikke hente billede fra {image_url}: {e}")
 
 #############################################
-# 5) Hyperlinkindsættelse – Forenklet metode
+# 6) Hyperlinkindsættelse – Forenklet metode
 #############################################
 
 def insert_hyperlink(slide, placeholder, display_text, url):
@@ -216,7 +246,7 @@ def insert_hyperlink(slide, placeholder, display_text, url):
                         run.hyperlink.address = url
 
 #############################################
-# 6) Udfyld slide – Fase 1 (Tekst og hyperlinks)
+# 7) Udfyld slide – Fase 1 (Tekst og hyperlinks)
 #############################################
 
 def fill_text_fields(slide, product_row, variant_df):
@@ -246,11 +276,11 @@ def fill_text_fields(slide, product_row, variant_df):
     insert_hyperlink(slide, "Product website link", "See product website", lookup_single_value(item_no, variant_df, "ProductWebsiteLink"))
 
 #############################################
-# 7) Udfyld slide – Fase 2 (Billeder)
+# 8) Udfyld slide – Fase 2 (Billeder)
 #############################################
 
 def fill_image_fields(slide, product_row, variant_df, lifestyle_df, line_df):
-    # Her accepterer vi, at product_row kan være en dict eller en streng (Item no)
+    # Hvis product_row ikke er en dict, antages det at det er en streng (item_no)
     if isinstance(product_row, dict):
         item_no = str(product_row.get("Item no", "")).strip()
     else:
@@ -267,7 +297,7 @@ def fill_image_fields(slide, product_row, variant_df, lifestyle_df, line_df):
         insert_image(slide, placeholder, url)
 
 #############################################
-# 8) Udfyld slide for ét produkt – Samler fase 1 og 2 samt bevarer template-layout
+# 9) Udfyld slide for ét produkt – Samler fase 1 og 2 samt bevarer template-layout
 #############################################
 
 def fill_slide(slide, product_row, variant_df, lifestyle_df, line_df):
@@ -275,7 +305,19 @@ def fill_slide(slide, product_row, variant_df, lifestyle_df, line_df):
     fill_image_fields(slide, product_row, variant_df, lifestyle_df, line_df)
 
 #############################################
-# 9) Main – To-trins Workflow
+# 10) Hjælpefunktion til at udtrække 'Product Code' fra en slide
+#############################################
+
+def get_item_no_from_slide(slide):
+    for shape in slide.shapes:
+        if shape.has_text_frame and "Product Code:" in shape.text:
+            match = re.search(r"Product Code:\s*(.*)", shape.text)
+            if match:
+                return match.group(1).split("\n")[0].strip()
+    return ""
+
+#############################################
+# 11) Main – To-trins Workflow
 #############################################
 
 st.title("Automatisk Generering af Præsentationer – To-trins Workflow")
@@ -333,10 +375,8 @@ if phase == "Generer tekstpræsentation":
         except Exception as e:
             st.error(f"Fejl ved indlæsning af PowerPoint template: {e}")
             st.stop()
-        # Brug en duplikationsfunktion, der kopierer hele slide-XML’en for at bevare master og baggrund
         final_pres = Presentation("template-generator.pptx")
-        for slide in list(final_pres.slides):
-            delete_slide(final_pres, slide)
+        delete_all_slides(final_pres)
         for idx, row in user_df.iterrows():
             new_slide = duplicate_slide_full(final_pres, slide_index=0)
             fill_text_fields(new_slide, row, variant_df)
@@ -365,13 +405,7 @@ elif phase == "Tilføj billeder til præsentation":
             st.error(f"Fejl ved indlæsning af eksterne datafiler: {e}")
             st.stop()
         for slide in pres.slides:
-            item_no = ""
-            for shape in slide.shapes:
-                if shape.has_text_frame and "Product Code:" in shape.text:
-                    match = re.search(r"Product Code:\s*(.*)", shape.text)
-                    if match:
-                        item_no = match.group(1).split("\n")[0].strip()
-                        break
+            item_no = get_item_no_from_slide(slide)
             if item_no:
                 fill_image_fields(slide, item_no, variant_df, lifestyle_df, line_df)
             else:
