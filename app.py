@@ -83,19 +83,22 @@ def generate_presentation(user_file, mapping_file, stock_file, template_file):
             item_no_stripped = item_no.split("-")[0] if "-" in item_no else item_no
             mapping_data = get_mapping_data(mapping_df, item_no_stripped)
         
-        if mapping_data is not None:
-            for field in ['{{Product name}}', '{{Product code}}', '{{Product country of origin}}']:
-                value = mapping_data.get(field, "N/A")
-                insert_text(new_slide, field, value)
-            
-            for field in ['{{Product Packshot1}}', '{{Product Lifestyle1}}', '{{Product Lifestyle2}}', '{{Product Lifestyle3}}', '{{Product Lifestyle4}}']:
-                image_url = mapping_data.get(field, "").strip()
-                if image_url:
-                    insert_image(new_slide, new_slide.shapes[0], image_url)
-                else:
-                    st.warning(f"Billede mangler for {field} på slide {index+1}")
-        else:
-            st.error(f"Ingen data fundet for Item no: {item_no}")
+        if mapping_data is None:
+            st.error(f"Ingen data fundet for Item no: {item_no}. Springes over.")
+            continue  # Spring denne iteration over
+        
+        # Indsæt tekst
+        for field in ['{{Product name}}', '{{Product code}}', '{{Product country of origin}}']:
+            value = str(mapping_data.get(field, "N/A"))
+            insert_text(new_slide, field, value)
+        
+        # Indsæt billeder
+        for field in ['{{Product Packshot1}}', '{{Product Lifestyle1}}', '{{Product Lifestyle2}}', '{{Product Lifestyle3}}', '{{Product Lifestyle4}}']:
+            image_url = mapping_data.get(field, "")
+            if image_url:
+                insert_image(new_slide, new_slide.shapes[0], image_url)
+            else:
+                st.warning(f"Billede mangler for {field} på slide {index+1}")
     
     output_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pptx").name
     prs.save(output_file)
