@@ -19,19 +19,29 @@ def update_progress(step):
     status_text.text(steps[step])
     time.sleep(1)
 
-# Funktion til at loade Excel-data
+# Indlæs Excel-data
 def load_excel(file):
     return pd.ExcelFile(file)
 
 # Funktion til at hente matching data fra mapping-file
 def get_mapping_data(mapping_df, item_no):
-    match = mapping_df[mapping_df['{{Product code}}'].astype(str) == item_no]
+    item_no = str(item_no).strip()
+    mapping_df.columns = mapping_df.columns.str.strip().str.replace(r"[{}]", "", regex=True)
+    
+    col_name = "Product code" if "Product code" in mapping_df.columns else None
+    if col_name is None:
+        return None
+    
+    mapping_df[col_name] = mapping_df[col_name].astype(str).str.strip()
+    match = mapping_df[mapping_df[col_name] == item_no]
+    
     if match.empty and "-" in item_no:
         stripped_item_no = item_no.split("-")[0]
-        match = mapping_df[mapping_df['{{Product code}}'].astype(str) == stripped_item_no]
+        match = mapping_df[mapping_df[col_name] == stripped_item_no]
+    
     return match.iloc[0] if not match.empty else None
 
-# Funktion til at kopiere en slide
+# Kopier en slide
 def duplicate_slide(prs, slide_index):
     source_slide = prs.slides[slide_index]
     slide_layout = source_slide.slide_layout
@@ -42,14 +52,14 @@ def duplicate_slide(prs, slide_index):
             new_shape.text_frame.text = shape.text_frame.text
     return new_slide
 
-# Funktion til at indsætte tekst i tekstbokse
+# Indsæt tekst i tekstbokse
 def insert_text(slide, field, value):
     value = str(value) if pd.notna(value) else "N/A"
     for shape in slide.shapes:
         if shape.has_text_frame and field in shape.text_frame.text:
             shape.text_frame.text = shape.text_frame.text.replace(field, value)
 
-# Funktion til at indsætte billeder
+# Indsæt billeder
 def insert_image(slide, placeholder, image_url):
     try:
         if isinstance(image_url, str) and image_url.startswith("http"):
@@ -62,19 +72,22 @@ def insert_image(slide, placeholder, image_url):
     except:
         print(f"Kunne ikke hente billede: {image_url}")
 
-# Funktion til at generere PowerPoint
+# Generer PowerPoint
 def generate_presentation(user_file, mapping_file, stock_file, template_file):
     update_progress(1)
     user_df = pd.read_excel(user_file)
     mapping_df = pd.read_excel(mapping_file, sheet_name=0)
     stock_df = pd.read_excel(stock_file, sheet_name=0)
-    mapping_df.columns = mapping_df.columns.str.strip()
+    
+    stock_df.fillna("N/A", inplace=True)
+    mapping_df.columns = mapping_df.columns.str.strip().str.replace(r"[{}]", "", regex=True)
+    user_df["Item no"] = user_df["Item no"].astype(str).str.strip()
     
     prs = pptx.Presentation(template_file)
     update_progress(2)
     
     for index, row in user_df.iterrows():
-        item_no = str(row['Item no'])
+        item_no = str(row['Item no']).strip()
         new_slide = duplicate_slide(prs, 0)
         mapping_data = get_mapping_data(mapping_df, item_no)
         
@@ -85,16 +98,16 @@ def generate_presentation(user_file, mapping_file, stock_file, template_file):
         
         if mapping_data is None:
             st.error(f"Ingen data fundet for Item no: {item_no}. Springes over.")
-            continue  # Spring denne iteration over
+            continue
         
         # Indsæt tekst
-        for field in ['{{Product name}}', '{{Product code}}', '{{Product country of origin}}']:
+        for field in ['Product name', 'Product code', 'Product country of origin']:
             value = str(mapping_data.get(field, "N/A"))
             insert_text(new_slide, field, value)
         
         # Indsæt billeder
-        for field in ['{{Product Packshot1}}', '{{Product Lifestyle1}}', '{{Product Lifestyle2}}', '{{Product Lifestyle3}}', '{{Product Lifestyle4}}']:
-            image_url = mapping_data.get(field, "")
+        for field in ['Product Packshot1', 'Product Lifestyle1', 'Product Lifestyle2', 'Product Lifestyle3', 'Product Lifestyle4']:
+            image_url = str(mapping_data.get(field, "")).strip()
             if image_url:
                 insert_image(new_slide, new_slide.shapes[0], image_url)
             else:
